@@ -536,8 +536,12 @@ function App() {
   }, [activeDateField, tripInfo.checkIn, tripInfo.checkOut]);
 
   const parseMessageContent = (content) => {
-    const isAmenityPicker = content.startsWith('<<AMENITY_PICKER>>');
-    const stripped = isAmenityPicker ? content.slice('<<AMENITY_PICKER>>'.length) : content;
+    const MARKER = '<<AMENITY_PICKER>>';
+    const markerIndex = content.indexOf(MARKER);
+    const isAmenityPicker = markerIndex !== -1;
+    const stripped = isAmenityPicker
+      ? content.slice(0, markerIndex) + content.slice(markerIndex + MARKER.length)
+      : content;
 
     if (stripped.includes('```json')) {
       const parts = stripped.split('```json');
