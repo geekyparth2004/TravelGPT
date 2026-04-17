@@ -470,6 +470,51 @@ const scrapeBooking = async (tripInfo, nights) => {
   }
 };
 
+// ─── Hotel detail lookup (on-click) ──────────────────────────────────────────
+
+export const getHotelDetails = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY not configured in .env');
+
+  const { default: OpenAI } = await import('openai');
+  const openai = new OpenAI({ apiKey });
+
+  const budgetLine = budget ? `- Budget: ₹${budget}/night (total ₹${budget * nights} for ${nights} nights)` : '';
+
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a knowledgeable travel assistant. Provide clear, practical hotel information using markdown bold (**text**) for section headings. No bullet overload — write in short paragraphs.'
+      },
+      {
+        role: 'user',
+        content: `Give me detailed information about the hotel "${name}"${area ? ` in ${area}` : ''}, ${destination}.
+
+Trip context:
+- Check-in: ${checkIn || 'N/A'}, Check-out: ${checkOut || 'N/A'} (${nights} night${nights !== 1 ? 's' : ''})
+- Guests: ${guests || 2}
+${budgetLine}
+
+Cover these areas (use **heading** style):
+**Overview** — What kind of hotel is it, star rating, vibe.
+**Why stay here** — What makes it stand out for this trip.
+**Location** — Neighbourhood, nearby landmarks, how far from key spots.
+**Rooms & amenities** — Room types available, notable facilities.
+**Practical tips** — Check-in time, parking, local transport, anything useful.
+**Best suited for** — Type of traveller (family, couples, business, solo).
+
+Keep the total response under 300 words. Be specific and factual.`
+      }
+    ],
+    temperature: 0.3,
+    max_tokens: 700
+  });
+
+  return response.choices[0].message.content || 'No details available.';
+};
+
 // ─── Main export ─────────────────────────────────────────────────────────────
 
 export const searchHotels = async ({

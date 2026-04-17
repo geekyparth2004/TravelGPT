@@ -21,7 +21,7 @@ try {
 
 import cors from 'cors';
 import express from 'express';
-import { searchHotels } from './liveSearch.mjs';
+import { searchHotels, getHotelDetails } from './liveSearch.mjs';
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -36,6 +36,25 @@ app.get('/api/hotels/search', async (req, res) => {
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Live hotel search failed.'
     });
+  }
+});
+
+app.get('/api/hotels/info', async (req, res) => {
+  try {
+    const { name, area, destination, checkIn, checkOut, guests, budget, nights } = req.query;
+    const info = await getHotelDetails({
+      name,
+      area,
+      destination,
+      checkIn,
+      checkOut,
+      guests: Number(guests) || 2,
+      budget: budget ? Number(budget) : null,
+      nights: Number(nights) || 1
+    });
+    res.json({ info });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get hotel details.' });
   }
 });
 

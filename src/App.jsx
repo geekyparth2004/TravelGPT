@@ -466,6 +466,35 @@ ${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}
 \`\`\``;
 };
 
+const fetchHotelInfo = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
+  const params = new URLSearchParams({
+    name,
+    area: area || '',
+    destination: destination || '',
+    checkIn: checkIn || '',
+    checkOut: checkOut || '',
+    guests: String(guests || 2),
+    budget: budget ? String(budget) : '',
+    nights: String(nights || 1)
+  });
+
+  let lastError = 'Hotel info fetch failed.';
+
+  for (const baseUrl of API_BASE_CANDIDATES) {
+    const normalizedBase = baseUrl === '' ? '' : baseUrl.replace(/\/$/, '');
+    try {
+      const response = await fetch(`${normalizedBase}/api/hotels/info?${params.toString()}`);
+      if (!response.ok) { lastError = `Status ${response.status}`; continue; }
+      const data = await response.json();
+      return data.info;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'Fetch failed.';
+    }
+  }
+
+  throw new Error(lastError);
+};
+
 const generateAssistantReply = async (tripInfo) => {
   const missingFields = getMissingFields(tripInfo);
 
@@ -630,6 +659,33 @@ function App() {
     const assistantMessage = await generateAssistantReply(nextTripInfo);
     setMessages((prev) => [...prev, assistantMessage]);
     setIsTyping(false);
+  };
+
+  const handleHotelClick = async (hotel) => {
+    const userMsg = `Tell me more about ${hotel.name}`;
+    setMessages((prev) => [...prev, { role: 'user', content: userMsg }]);
+    setIsTyping(true);
+    try {
+      const nights = getNightCount(tripInfo.checkIn, tripInfo.checkOut);
+      const info = await fetchHotelInfo({
+        name: hotel.name,
+        area: hotel.area,
+        destination: tripInfo.destination,
+        checkIn: tripInfo.checkIn,
+        checkOut: tripInfo.checkOut,
+        guests: tripInfo.guests,
+        budget: tripInfo.budgetValue,
+        nights
+      });
+      setMessages((prev) => [...prev, { role: 'assistant', content: info }]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `Sorry, I couldn't fetch details for **${hotel.name}** right now. Try searching it directly on Booking.com.` }
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   const renderText = (text) => {
@@ -850,6 +906,13 @@ function App() {
                               )}
 
                               <div className="hotel-actions">
+                                <button
+                                  type="button"
+                                  className="hotel-link hotel-link--ai"
+                                  onClick={() => handleHotelClick(hotel)}
+                                >
+                                  <Sparkles size={13} /> Ask AI about this
+                                </button>
                                 {hotel.bookingLink ? (
                                   <a className="hotel-link hotel-link--primary" href={hotel.bookingLink} target="_blank" rel="noreferrer">
                                     Book on Booking.com <ExternalLink size={13} />
