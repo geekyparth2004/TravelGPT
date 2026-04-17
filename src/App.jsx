@@ -408,20 +408,36 @@ const fetchLiveRecommendations = async (tripInfo) => {
 
 const createRecommendationsMessage = (tripInfo, payload) => {
   const summary = getTripSummary(tripInfo);
-  const sourceSummary = payload.sources
-    .map((source) =>
-      source.ok
-        ? `${source.source}: ${source.count} live result${source.count === 1 ? '' : 's'}`
-        : `${source.source}: unavailable (${source.error})`
-    )
-    .join(' | ');
+  const destination = tripInfo.destination || 'your destination';
 
-  if (!payload.recommendations.length) {
-    return `I checked the live travel sources but couldn't capture usable hotel results for this search.\n\nTrip summary: ${summary}.\nSource status: ${sourceSummary}.`;
+  if (payload.noBudgetResults) {
+    const cheapest = payload.cheapestAlternative;
+    const cheapestLine = cheapest
+      ? ` The lowest option available is **${cheapest.name}** at ${cheapest.price}/night.`
+      : '';
+    const cardBlock = payload.recommendations.length
+      ? `\n\`\`\`json\n${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}\n\`\`\``
+      : '';
+    return `No hotels found within your ₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night budget for ${destination}.${cheapestLine}\n\nTrip summary: ${summary}${cardBlock}`;
   }
 
-  const bestOverall = payload.recommendations[0];
-  return `I found live hotel results for your trip.\n\nTrip summary: ${summary}.\nBest live match: ${bestOverall.name} from ${bestOverall.source}.\nSource status: ${sourceSummary}.\n\`\`\`json
+  if (!payload.recommendations.length) {
+    const budgetLine = tripInfo.budgetValue
+      ? ` within your ₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night budget`
+      : '';
+    return `I searched live travel platforms but found no hotels${budgetLine} for ${destination} on those dates.\n\nTrip summary: ${summary}.\n\nTry searching directly on:\n• Booking.com\n• Expedia\n• MakeMyTrip\n• Trivago`;
+  }
+
+  const liveCount = (payload.sources || []).find((s) => s.live && s.ok)?.count ?? 0;
+  const sourceNote = liveCount > 0
+    ? `${liveCount} live result${liveCount === 1 ? '' : 's'} from Booking.com · prices also compared across Expedia, MakeMyTrip, Trivago, Hotels.com & Agoda`
+    : `Prices compared across Booking.com, Expedia, MakeMyTrip, Trivago & more`;
+
+  const top = payload.recommendations[0];
+  const budgetClause = tripInfo.budgetValue
+    ? ` within your ₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night budget`
+    : '';
+  return `Here are hotels for your trip to ${destination}. Found ${payload.recommendations.length} option${payload.recommendations.length === 1 ? '' : 's'}${budgetClause} — top 2 picks include a full price comparison across 6 platforms.\n\n${summary}\n${sourceNote}\n\nTop pick: **${top.name}** at ${top.price}/night.\n\`\`\`json
 ${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}
 \`\`\``;
 };
@@ -633,7 +649,15 @@ function App() {
                     {data?.recommendations && (
                       <div className="hotel-cards-container">
                         {data.recommendations.map((hotel, hotelIndex) => (
-                          <div key={`${hotel.name}-${hotelIndex}`} className="hotel-card">
+                          <div
+                            key={`${hotel.name}-${hotelIndex}`}
+                            className={`hotel-card${hotel.isRecommended ? ' hotel-card--recommended' : ''}`}
+                          >
+                            {hotel.recommendationType && (
+                              <div className={`hotel-recommended-badge hotel-recommended-badge--${hotel.recommendationType === 'Best Value' ? 'value' : 'rated'}`}>
+                                {hotel.recommendationType === 'Best Value' ? '🏆' : '⭐'} {hotel.recommendationType}
+                              </div>
+                            )}
                             <div className="hotel-img-wrapper">
                               <img src={hotel.image} alt={hotel.name} className="hotel-img" />
                               <div className="hotel-rating-badge">
@@ -644,42 +668,88 @@ function App() {
                               <div className="hotel-header">
                                 <div>
                                   <h4 className="hotel-title">{hotel.name}</h4>
-                                  <p className="hotel-area">{hotel.area}</p>
+                                  <p className="hotel-area">
+                                    <MapPin size={12} style={{ display: 'inline', marginRight: 3 }} />
+                                    {hotel.area}
+                                  </p>
                                 </div>
-                                <div className="hotel-price">
-                                  {hotel.price} <span>/night</span>
+                                <div className="hotel-price-block">
+                                  <div className="hotel-price">
+                                    {hotel.price} <span>/night</span>
+                                  </div>
+                                  <div className="hotel-total">{hotel.totalPrice} total · {hotel.nights}n</div>
                                 </div>
-                              </div>
-
-                              <div className="hotel-meta">
-                                <span>{hotel.source}</span>
-                                <span>{hotel.totalPrice} estimated total</span>
                               </div>
 
                               <div className="hotel-amenities">
-                                {(hotel.amenities || []).map((amenity, amenityIndex) => (
-                                  <span key={`${amenity}-${amenityIndex}`} className="amenity-tag">
-                                    {amenity}
-                                  </span>
+                                {(hotel.amenities || []).map((amenity, i) => (
+                                  <span key={`${amenity}-${i}`} className="amenity-tag">{amenity}</span>
                                 ))}
                               </div>
 
-                              <div className="hotel-source-list">
-                                {(hotel.comparison || []).map((source, sourceIndex) => (
-                                  <span key={`${source}-${sourceIndex}`} className="source-chip">
-                                    {source}
-                                  </span>
-                                ))}
-                              </div>
-
-                              <p className="hotel-review">{hotel.reviewSummary}</p>
-                              <div className="hotel-reason">{hotel.reason}</div>
-                              <p className="hotel-provider">{hotel.bestProvider}</p>
-                              {hotel.bookingLink && (
-                                <a className="hotel-link" href={hotel.bookingLink} target="_blank" rel="noreferrer">
-                                  Open live listing <ExternalLink size={14} />
-                                </a>
+                              {hotel.platformComparison && (
+                                <div className="price-comparison">
+                                  <div className="price-comparison-title">Price comparison across platforms</div>
+                                  <div className="price-comparison-grid">
+                                    {hotel.platformComparison.platforms.map((p) => (
+                                      <div key={p.platform} className={`price-row${p.isCheapest ? ' price-row--cheapest' : ''}`}>
+                                        <span className="price-row-platform">
+                                          {p.isCheapest && <span className="cheapest-badge">✓</span>}
+                                          {p.platform}
+                                          {!p.live && <span className="est-label"> est.</span>}
+                                        </span>
+                                        <span className="price-row-amount">{p.price}/night</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="price-savings-note">
+                                    Book on <strong>{hotel.platformComparison.cheapestPlatform}</strong> for <strong>{hotel.platformComparison.cheapestPrice}/night</strong> — save up to {hotel.platformComparison.savings}
+                                  </div>
+                                </div>
                               )}
+
+                              {hotel.isRecommended && (
+                                <div className="why-recommended">
+                                  <div className="why-recommended-title">Why we recommend this</div>
+                                  <p className="why-recommended-body">{hotel.reason}</p>
+                                </div>
+                              )}
+
+                              {!hotel.isRecommended && (
+                                <div className="hotel-reason">{hotel.reason}</div>
+                              )}
+
+                              <div className="hotel-actions">
+                                {hotel.bookingLink ? (
+                                  <a className="hotel-link hotel-link--primary" href={hotel.bookingLink} target="_blank" rel="noreferrer">
+                                    Book on Booking.com <ExternalLink size={13} />
+                                  </a>
+                                ) : (
+                                  <a className="hotel-link hotel-link--primary" href={`https://www.booking.com/search.html?ss=${encodeURIComponent(hotel.name)}`} target="_blank" rel="noreferrer">
+                                    Search on Booking.com <ExternalLink size={13} />
+                                  </a>
+                                )}
+                                {hotel.platformComparison?.cheapestPlatform && hotel.platformComparison.cheapestPlatform !== 'Booking.com' && (
+                                  <a
+                                    className="hotel-link hotel-link--secondary"
+                                    href={
+                                      hotel.platformComparison.cheapestPlatform === 'MakeMyTrip'
+                                        ? `https://www.makemytrip.com/hotels/hotel-listing/?searchText=${encodeURIComponent(hotel.name)}`
+                                        : hotel.platformComparison.cheapestPlatform === 'Agoda'
+                                        ? `https://www.agoda.com/search?city=${encodeURIComponent(hotel.name)}`
+                                        : hotel.platformComparison.cheapestPlatform === 'Trivago'
+                                        ? `https://www.trivago.in/?q=${encodeURIComponent(hotel.name)}`
+                                        : hotel.platformComparison.cheapestPlatform === 'Expedia'
+                                        ? `https://www.expedia.com/Hotel-Search?destination=${encodeURIComponent(hotel.name)}`
+                                        : `https://www.hotels.com/search.do?q=${encodeURIComponent(hotel.name)}`
+                                    }
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Check {hotel.platformComparison.cheapestPlatform} <ExternalLink size={11} />
+                                  </a>
+                                )}
+                              </div>
                             </div>
                           </div>
                         ))}
