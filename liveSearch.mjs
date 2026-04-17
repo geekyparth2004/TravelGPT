@@ -76,8 +76,28 @@ const parseRatingToNumber = (value) => {
   return null;
 };
 
+const DEFAULT_HOTEL_IMAGE = 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900';
+
 const normalizeAmenities = (items = []) =>
   [...new Set(items.map((item) => item.trim()).filter(Boolean))].slice(0, 5);
+
+const normalizeHotelName = (name) =>
+  name.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+
+const deduplicateHotels = (hotels) => {
+  const seen = new Map();
+  for (const hotel of hotels) {
+    const key = normalizeHotelName(hotel.name);
+    if (!seen.has(key)) {
+      seen.set(key, hotel);
+    } else {
+      // Prefer the lower price; prefer live source if prices are equal
+      const existing = seen.get(key);
+      if (hotel.priceValue < existing.priceValue) seen.set(key, hotel);
+    }
+  }
+  return [...seen.values()];
+};
 
 const formatINR = (value) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Math.round(value));
@@ -113,12 +133,18 @@ const generatePlatformPrices = (hotel) => {
   }));
 };
 
+const LIVE_SOURCES = new Set(['Booking.com', 'MakeMyTrip', 'Goibibo']);
+
 const buildPlatformComparison = (hotel) => {
-  const isLive = hotel.source === 'Booking.com';
+  const isLive = LIVE_SOURCES.has(hotel.source);
   const estimated = generatePlatformPrices(hotel);
+  // Don't repeat the live source in the estimated list
+  const filtered = isLive
+    ? estimated.filter((p) => p.name !== hotel.source)
+    : estimated;
   const all = [
-    { platform: isLive ? 'Booking.com' : 'AI Estimate', priceValue: hotel.priceValue, live: isLive },
-    ...estimated
+    { platform: isLive ? hotel.source : 'AI Estimate', priceValue: hotel.priceValue, live: isLive },
+    ...filtered
   ].sort((a, b) => a.priceValue - b.priceValue);
 
   const cheapest = all[0];
@@ -332,6 +358,8 @@ Check-in: ${tripInfo.checkIn}, Check-out: ${tripInfo.checkOut} (${nights} nights
 ${budgetInstruction}
 ${amenityLine}
 
+Source hotels from a MIX of Indian and international booking platforms: Booking.com, MakeMyTrip, Goibibo, Expedia India, Agoda, Hotels.com and Yatra. Include variety — budget guesthouses, mid-range hotels and premium properties as appropriate for the budget.
+
 Return this JSON object (no other text):
 {
   "hotels": [
@@ -458,9 +486,152 @@ const scrapeBooking = async (tripInfo, nights) => {
           totalPriceValue: priceValue ? priceValue * nights : null,
           priceText: h.priceText,
           rating: parseRatingToNumber(h.ratingText),
-          image: h.image || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900',
+          image: h.image || DEFAULT_HOTEL_IMAGE,
           link: h.link,
           amenities: normalizeAmenities(h.amenities)
+        };
+      })
+      .filter((h) => h.priceValue >= 200 && h.priceValue <= 1000000);
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+};
+
+// ─── MakeMyTrip scraper ───────────────────────────────────────────────────────
+
+const scrapeMakeMyTrip = async (tripInfo, nights) => {
+  const { browser, context, page } = await createPage();
+  try {
+    const [y1, m1, d1] = tripInfo.checkIn.split('-');
+    const [y2, m2, d2] = tripInfo.checkOut.split('-');
+    const ci = `${m1}%2F${d1}%2F${y1}`;
+    const co = `${m2}%2F${d2}%2F${y2}`;
+    const city = encodeURIComponent(tripInfo.destination);
+
+    await page.goto(
+      `https://www.makemytrip.com/hotels/hotel-listing/?checkin=${ci}&checkout=${co}&city=${city}&noOfNights=${nights}&adults=${tripInfo.guests || 2}&rooms=1&currency=INR`,
+      { waitUntil: 'domcontentloaded', timeout: 60000 }
+    );
+
+    await page.waitForTimeout(5000);
+    await page.evaluate(() => window.scrollBy(0, 1000)).catch(() => {});
+    await page.waitForTimeout(2000);
+
+    const hotels = await page.evaluate((dest) => {
+      const results = [];
+      // MMT uses CSS Modules (hashed class names) — look for structural patterns
+      const candidates = Array.from(document.querySelectorAll(
+        '[class*="HotelCard"], [class*="hotelCard"], [class*="hotel-card"], [class*="listing-card"], [class*="listingCard"]'
+      ));
+
+      for (const card of candidates.slice(0, 12)) {
+        const nameEl = card.querySelector('h2, h3, [class*="name"], [class*="Name"], [class*="title"]');
+        const name = nameEl?.textContent?.trim() || '';
+
+        let priceText = '';
+        for (const el of Array.from(card.querySelectorAll('*'))) {
+          if (el.children.length <= 1) {
+            const t = el.textContent?.trim() || '';
+            if (t.includes('₹') && /\d{3,}/.test(t)) { priceText = t; break; }
+          }
+        }
+
+        const ratingEl = card.querySelector('[class*="rating"], [class*="Rating"], [class*="star"]');
+        const areaEl = card.querySelector('[class*="area"], [class*="Area"], [class*="locality"], [class*="location"]');
+        const image = card.querySelector('img')?.src || '';
+
+        if (name && priceText) {
+          results.push({ name, area: areaEl?.textContent?.trim() || dest, priceText, ratingText: ratingEl?.textContent?.trim() || '', image });
+        }
+      }
+      return results;
+    }, tripInfo.destination);
+
+    return hotels
+      .map((h) => {
+        const priceValue = parsePriceToNumber(h.priceText);
+        return {
+          source: 'MakeMyTrip',
+          name: h.name,
+          area: h.area || tripInfo.destination,
+          priceValue,
+          totalPriceValue: priceValue ? priceValue * nights : null,
+          priceText: h.priceText,
+          rating: parseRatingToNumber(h.ratingText),
+          image: h.image || DEFAULT_HOTEL_IMAGE,
+          link: `https://www.makemytrip.com/hotels/hotel-listing/?city=${encodeURIComponent(tripInfo.destination)}&q=${encodeURIComponent(h.name)}`,
+          amenities: []
+        };
+      })
+      .filter((h) => h.priceValue >= 200 && h.priceValue <= 1000000);
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+};
+
+// ─── Goibibo scraper ─────────────────────────────────────────────────────────
+
+const scrapeGoibibo = async (tripInfo, nights) => {
+  const { browser, context, page } = await createPage();
+  try {
+    const ci = tripInfo.checkIn.replace(/-/g, '');  // YYYYMMDD
+    const co = tripInfo.checkOut.replace(/-/g, '');
+    const citySlug = tripInfo.destination.toLowerCase().replace(/\s+/g, '-');
+
+    await page.goto(
+      `https://www.goibibo.com/hotels/hotels-in-${citySlug}/?ci=${ci}&co=${co}&nc=${tripInfo.guests || 2}&r=1`,
+      { waitUntil: 'domcontentloaded', timeout: 60000 }
+    );
+
+    await page.waitForTimeout(5000);
+    await page.evaluate(() => window.scrollBy(0, 1000)).catch(() => {});
+    await page.waitForTimeout(2000);
+
+    const hotels = await page.evaluate((dest) => {
+      const results = [];
+      const candidates = Array.from(document.querySelectorAll(
+        '[class*="HotelCard"], [class*="hotelCard"], [class*="hotel-card"], [class*="HotelListItem"], [class*="hotelListItem"]'
+      ));
+
+      for (const card of candidates.slice(0, 12)) {
+        const nameEl = card.querySelector('h2, h3, [class*="hotelName"], [class*="HotelName"], [class*="name"]');
+        const name = nameEl?.textContent?.trim() || '';
+
+        let priceText = '';
+        for (const el of Array.from(card.querySelectorAll('*'))) {
+          if (el.children.length <= 1) {
+            const t = el.textContent?.trim() || '';
+            if (t.includes('₹') && /\d{3,}/.test(t)) { priceText = t; break; }
+          }
+        }
+
+        const ratingEl = card.querySelector('[class*="rating"], [class*="Rating"], [class*="score"]');
+        const areaEl = card.querySelector('[class*="area"], [class*="Area"], [class*="locality"], [class*="address"]');
+        const image = card.querySelector('img')?.src || '';
+
+        if (name && priceText) {
+          results.push({ name, area: areaEl?.textContent?.trim() || dest, priceText, ratingText: ratingEl?.textContent?.trim() || '', image });
+        }
+      }
+      return results;
+    }, tripInfo.destination);
+
+    return hotels
+      .map((h) => {
+        const priceValue = parsePriceToNumber(h.priceText);
+        return {
+          source: 'Goibibo',
+          name: h.name,
+          area: h.area || tripInfo.destination,
+          priceValue,
+          totalPriceValue: priceValue ? priceValue * nights : null,
+          priceText: h.priceText,
+          rating: parseRatingToNumber(h.ratingText),
+          image: h.image || DEFAULT_HOTEL_IMAGE,
+          link: `https://www.goibibo.com/hotels/hotels-in-${citySlug}/?q=${encodeURIComponent(h.name)}`,
+          amenities: []
         };
       })
       .filter((h) => h.priceValue >= 200 && h.priceValue <= 1000000);
@@ -560,25 +731,50 @@ export const searchHotels = async ({
       ai: true
     });
 
-    // Fallback: Booking.com scraper
-    try {
-      hotels = await scrapeBooking(tripInfo, nights);
-      sources.push({ source: 'Booking.com', ok: true, count: hotels.length, error: '', live: true });
-    } catch (scrapeErr) {
-      sources.push({
-        source: 'Booking.com',
-        ok: false,
-        count: 0,
-        error: scrapeErr instanceof Error ? scrapeErr.message : 'Scrape failed.',
-        live: true
-      });
+    // Fallback: run Booking.com, MakeMyTrip and Goibibo scrapers in parallel
+    const [bookingResult, mmtResult, goibiboResult] = await Promise.allSettled([
+      scrapeBooking(tripInfo, nights),
+      scrapeMakeMyTrip(tripInfo, nights),
+      scrapeGoibibo(tripInfo, nights)
+    ]);
+
+    const scraperDefs = [
+      { name: 'Booking.com', result: bookingResult },
+      { name: 'MakeMyTrip', result: mmtResult },
+      { name: 'Goibibo', result: goibiboResult }
+    ];
+
+    const allScraped = [];
+    for (const { name, result } of scraperDefs) {
+      if (result.status === 'fulfilled') {
+        allScraped.push(...result.value);
+        sources.push({ source: name, ok: true, count: result.value.length, error: '', live: true });
+      } else {
+        sources.push({ source: name, ok: false, count: 0, error: result.reason?.message || 'Scrape failed.', live: true });
+      }
     }
+
+    hotels = deduplicateHotels(allScraped);
   }
 
-  const { recommendations, noBudgetResults, cheapestAlternative } = buildLiveRecommendations(tripInfo, hotels, nights);
+  // Hard pre-filter: strip over-budget hotels before scoring/ranking
+  const budgetReadyHotels = perNightBudget
+    ? hotels.filter((h) => Number(h.priceValue) > 0 && Number(h.priceValue) <= perNightBudget)
+    : hotels;
+
+  const { recommendations, noBudgetResults, cheapestAlternative } = buildLiveRecommendations(
+    tripInfo,
+    budgetReadyHotels,
+    nights
+  );
+
+  // Final safety net: guarantee no recommendation ever exceeds the per-night budget
+  const safeRecommendations = perNightBudget
+    ? recommendations.filter((r) => Number(r.priceValue) <= perNightBudget)
+    : recommendations;
 
   return {
-    recommendations,
+    recommendations: safeRecommendations,
     sources,
     noBudgetResults,
     cheapestAlternative,

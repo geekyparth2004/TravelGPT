@@ -453,9 +453,12 @@ const createRecommendationsMessage = (tripInfo, payload) => {
   }
 
   const aiSource = (payload.sources || []).find((s) => s.ai && s.ok);
+  const liveSources = (payload.sources || []).filter((s) => s.live && s.ok).map((s) => s.source);
   const sourceNote = aiSource
-    ? `${aiSource.count} hotel${aiSource.count === 1 ? '' : 's'} found via ChatGPT · prices compared across Booking.com, Expedia, MakeMyTrip, Trivago, Hotels.com & Agoda`
-    : `Prices compared across Booking.com, Expedia, MakeMyTrip, Trivago & more`;
+    ? `${aiSource.count} hotel${aiSource.count === 1 ? '' : 's'} found via ChatGPT · prices compared across Booking.com, MakeMyTrip, Goibibo, Expedia, Agoda & more`
+    : liveSources.length
+    ? `Live results from ${liveSources.join(', ')} · prices cross-checked across platforms`
+    : `Prices compared across Booking.com, MakeMyTrip, Goibibo, Expedia & more`;
 
   const top = payload.recommendations[0];
   const budgetClause = totalBudget
@@ -478,21 +481,27 @@ const fetchHotelInfo = async ({ name, area, destination, checkIn, checkOut, gues
     nights: String(nights || 1)
   });
 
-  let lastError = 'Hotel info fetch failed.';
+  const errors = [];
 
   for (const baseUrl of API_BASE_CANDIDATES) {
     const normalizedBase = baseUrl === '' ? '' : baseUrl.replace(/\/$/, '');
+    const url = `${normalizedBase}/api/hotels/info?${params.toString()}`;
     try {
-      const response = await fetch(`${normalizedBase}/api/hotels/info?${params.toString()}`);
-      if (!response.ok) { lastError = `Status ${response.status}`; continue; }
+      const response = await fetch(url);
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        errors.push(`${url} → ${response.status}${body ? ': ' + body.slice(0, 120) : ''}`);
+        continue;
+      }
       const data = await response.json();
+      if (!data.info) throw new Error('Empty response from server');
       return data.info;
     } catch (error) {
-      lastError = error instanceof Error ? error.message : 'Fetch failed.';
+      errors.push(`${url} → ${error instanceof Error ? error.message : 'fetch failed'}`);
     }
   }
 
-  throw new Error(lastError);
+  throw new Error(`Hotel info unavailable. Tried:\n${errors.join('\n')}`);
 };
 
 const generateAssistantReply = async (tripInfo) => {
@@ -678,10 +687,14 @@ function App() {
         nights
       });
       setMessages((prev) => [...prev, { role: 'assistant', content: info }]);
-    } catch {
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'Unknown error';
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: `Sorry, I couldn't fetch details for **${hotel.name}** right now. Try searching it directly on Booking.com.` }
+        {
+          role: 'assistant',
+          content: `Could not load details for **${hotel.name}**.\n\n${detail}\n\nMake sure the backend server is running (\`node server.mjs\`) and try again.`
+        }
       ]);
     } finally {
       setIsTyping(false);
@@ -777,7 +790,7 @@ function App() {
           <div className="sidebar-section sidebar-note">
             <p className="sidebar-note-title">AI-Powered Search</p>
             <p className="sidebar-note-copy">
-              Hotels are found via ChatGPT and strictly filtered to your per-night budget. Booking.com is used as fallback if AI search fails.
+              Hotels are found via ChatGPT across Booking.com, MakeMyTrip, Goibibo, Expedia & more — strictly filtered to your per-night budget.
             </p>
           </div>
         </aside>
