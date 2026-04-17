@@ -376,7 +376,7 @@ const getQuestionForField = (field) => {
     case 'budget':
       return 'What budget per night should I stay under in rupees?';
     case 'amenities':
-      return 'Which amenities are must-haves for this trip, such as Wi-Fi, breakfast, pool, or free cancellation?';
+      return '<<AMENITY_PICKER>>Select your must-have amenities for this trip:';
     default:
       return 'Tell me a little more about your trip.';
   }
@@ -536,19 +536,21 @@ function App() {
   }, [activeDateField, tripInfo.checkIn, tripInfo.checkOut]);
 
   const parseMessageContent = (content) => {
-    if (content.includes('```json')) {
-      const parts = content.split('```json');
+    const isAmenityPicker = content.startsWith('<<AMENITY_PICKER>>');
+    const stripped = isAmenityPicker ? content.slice('<<AMENITY_PICKER>>'.length) : content;
+
+    if (stripped.includes('```json')) {
+      const parts = stripped.split('```json');
       const textPart = parts[0];
       const jsonText = parts[1].split('```')[0];
-
       try {
-        return { text: textPart, data: JSON.parse(jsonText) };
+        return { text: textPart, data: JSON.parse(jsonText), isAmenityPicker };
       } catch {
-        return { text: content, data: null };
+        return { text: stripped, data: null, isAmenityPicker };
       }
     }
 
-    return { text: content, data: null };
+    return { text: stripped, data: null, isAmenityPicker };
   };
 
   const handleSend = async (event) => {
@@ -723,12 +725,51 @@ function App() {
         <main className="chat-main">
           <div className="message-list">
             {messages.map((message, index) => {
-              const { text, data } = parseMessageContent(message.content);
+              const { text, data, isAmenityPicker } = parseMessageContent(message.content);
+              const isLastMessage = index === messages.length - 1;
 
               return (
                 <div key={`${message.role}-${index}`} className={`message ${message.role}`}>
                   <div className="message-content">
                     <div className="message-text">{renderText(text)}</div>
+
+                    {isAmenityPicker && isLastMessage && activeAmenityField && (
+                      <div className="inline-amenity-picker">
+                        <div className="amenity-grid">
+                          {AMENITY_KEYWORDS.map((amenity) => (
+                            <button
+                              key={amenity}
+                              type="button"
+                              className={`amenity-chip${amenityDraft.includes(amenity) ? ' amenity-chip--active' : ''}`}
+                              onClick={() => toggleAmenity(amenity)}
+                            >
+                              <span className="amenity-chip-icon">{AMENITY_ICONS[amenity]}</span>
+                              <span className="amenity-chip-label">{amenity}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <div className="amenity-picker-actions">
+                          <button
+                            type="button"
+                            className="amenity-skip-btn"
+                            onClick={() => handleAmenitySave([])}
+                          >
+                            No preference, skip
+                          </button>
+                          <button
+                            type="button"
+                            className="amenity-confirm-btn"
+                            onClick={() => handleAmenitySave(amenityDraft)}
+                            disabled={!amenityDraft.length}
+                          >
+                            {amenityDraft.length
+                              ? `Confirm ${amenityDraft.length} amenit${amenityDraft.length === 1 ? 'y' : 'ies'}`
+                              : 'Select at least one'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {data?.recommendations && (
                       <div className="hotel-cards-container">
                         {data.recommendations.map((hotel, hotelIndex) => (
@@ -881,46 +922,6 @@ function App() {
             </div>
           )}
 
-          {activeAmenityField && (
-            <div className="amenity-picker-dock">
-              <div className="amenity-picker-header">
-                <p className="amenity-picker-title">Select your must-have amenities</p>
-                <p className="amenity-picker-subtitle">Tap to select — we'll only show hotels that match</p>
-              </div>
-              <div className="amenity-grid">
-                {AMENITY_KEYWORDS.map((amenity) => (
-                  <button
-                    key={amenity}
-                    type="button"
-                    className={`amenity-chip${amenityDraft.includes(amenity) ? ' amenity-chip--active' : ''}`}
-                    onClick={() => toggleAmenity(amenity)}
-                  >
-                    <span className="amenity-chip-icon">{AMENITY_ICONS[amenity]}</span>
-                    <span className="amenity-chip-label">{amenity}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="amenity-picker-actions">
-                <button
-                  type="button"
-                  className="amenity-skip-btn"
-                  onClick={() => handleAmenitySave([])}
-                >
-                  No preference, skip
-                </button>
-                <button
-                  type="button"
-                  className="amenity-confirm-btn"
-                  onClick={() => handleAmenitySave(amenityDraft)}
-                  disabled={!amenityDraft.length}
-                >
-                  {amenityDraft.length
-                    ? `Confirm ${amenityDraft.length} amenit${amenityDraft.length === 1 ? 'y' : 'ies'}`
-                    : 'Select at least one'}
-                </button>
-              </div>
-            </div>
-          )}
 
           <form className="input-area" onSubmit={handleSend}>
             <div className="input-wrapper">

@@ -263,7 +263,7 @@ const buildLiveRecommendations = (tripInfo, hotels, nights) => {
   // Filter: hotel's TOTAL stay cost must be within the user's total budget
   // total budget = perNight × nights, so this is equivalent to priceValue <= perNightBudget
   const pool = tripInfo.budgetValue
-    ? hotels.filter((h) => h.priceValue <= tripInfo.budgetValue)
+    ? hotels.filter((h) => Number(h.priceValue) <= Number(tripInfo.budgetValue))
     : hotels;
 
   if (!pool.length && tripInfo.budgetValue) {
@@ -361,7 +361,9 @@ Return this JSON object (no other text):
   const raw = Array.isArray(parsed) ? parsed : (parsed.hotels || []);
 
   return raw
-    .filter((h) => h.name && typeof h.pricePerNight === 'number' && h.pricePerNight > 0)
+    .map((h) => ({ ...h, pricePerNight: Number(h.pricePerNight) }))
+    .filter((h) => h.name && h.pricePerNight > 0)
+    // Hard cap: reject anything over budget — catches hallucinated prices
     .filter((h) => !perNightBudget || h.pricePerNight <= perNightBudget)
     .map((h) => ({
       source: 'AI Estimated',
@@ -370,8 +372,8 @@ Return this JSON object (no other text):
       priceValue: Math.round(h.pricePerNight),
       totalPriceValue: Math.round(h.pricePerNight) * nights,
       priceText: `₹${Math.round(h.pricePerNight).toLocaleString('en-IN')}`,
-      rating: typeof h.rating === 'number'
-        ? parseFloat(Math.min(10, Math.max(1, h.rating)).toFixed(1))
+      rating: Number(h.rating) > 0
+        ? parseFloat(Math.min(10, Math.max(1, Number(h.rating))).toFixed(1))
         : null,
       image: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900',
       link: `https://www.booking.com/search.html?ss=${encodeURIComponent(h.name + ' ' + tripInfo.destination)}`,

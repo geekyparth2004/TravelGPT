@@ -775,31 +775,12 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text-muted);
 }
 
-/* ── Amenity Picker Dock ────────────────────────────────────────────────────── */
-.amenity-picker-dock {
-  padding: 1rem 1.25rem 0.75rem;
-  border-top: 1px solid var(--glass-border);
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(8px);
-  animation: slideUp 0.25s ease-out;
-}
-
-.amenity-picker-header {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-}
-
-.amenity-picker-title {
-  font-size: 0.92rem;
-  font-weight: 600;
-  color: var(--text-main);
-}
-
-.amenity-picker-subtitle {
-  font-size: 0.75rem;
-  color: var(--text-muted);
+/* ── Inline Amenity Picker (inside message bubble) ─────────────────────────── */
+.inline-amenity-picker {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  animation: fadeIn 0.25s ease-out;
 }
 
 .amenity-grid {
