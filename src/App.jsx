@@ -84,6 +84,14 @@ const formatCurrency = (value) =>
     maximumFractionDigits: 0
   }).format(Math.round(value));
 
+const getNightCount = (checkIn, checkOut) => {
+  if (!checkIn || !checkOut) return 0;
+  const start = new Date(`${checkIn}T00:00:00Z`).getTime();
+  const end = new Date(`${checkOut}T00:00:00Z`).getTime();
+  if (isNaN(start) || isNaN(end) || end <= start) return 0;
+  return Math.max(1, Math.round((end - start) / (1000 * 60 * 60 * 24)));
+};
+
 const formatDateForDisplay = (isoDate) => {
   if (!isoDate) return '';
   const [year, month, day] = isoDate.split('-');
@@ -409,35 +417,40 @@ const fetchLiveRecommendations = async (tripInfo) => {
 const createRecommendationsMessage = (tripInfo, payload) => {
   const summary = getTripSummary(tripInfo);
   const destination = tripInfo.destination || 'your destination';
+  const nights = payload.nights || getNightCount(tripInfo.checkIn, tripInfo.checkOut);
+  const totalBudget = payload.totalBudget || (tripInfo.budgetValue && nights ? tripInfo.budgetValue * nights : null);
 
   if (payload.noBudgetResults) {
     const cheapest = payload.cheapestAlternative;
+    const budgetSummary = totalBudget
+      ? ` (₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night × ${nights} nights = ₹${totalBudget.toLocaleString('en-IN')} total budget)`
+      : '';
     const cheapestLine = cheapest
-      ? ` The lowest option available is **${cheapest.name}** at ${cheapest.price}/night.`
+      ? ` The lowest option available is **${cheapest.name}** at ${cheapest.price}/night (${cheapest.totalPrice} total for ${nights} nights).`
       : '';
     const cardBlock = payload.recommendations.length
       ? `\n\`\`\`json\n${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}\n\`\`\``
       : '';
-    return `No hotels found within your ₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night budget for ${destination}.${cheapestLine}\n\nTrip summary: ${summary}${cardBlock}`;
+    return `No hotels found within your budget${budgetSummary} for ${destination}.${cheapestLine}\n\nTrip summary: ${summary}${cardBlock}`;
   }
 
   if (!payload.recommendations.length) {
-    const budgetLine = tripInfo.budgetValue
-      ? ` within your ₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night budget`
+    const budgetLine = totalBudget
+      ? ` within your total budget of ₹${totalBudget.toLocaleString('en-IN')} (₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night × ${nights} nights)`
       : '';
-    return `I searched live travel platforms but found no hotels${budgetLine} for ${destination} on those dates.\n\nTrip summary: ${summary}.\n\nTry searching directly on:\n• Booking.com\n• Expedia\n• MakeMyTrip\n• Trivago`;
+    return `I searched but found no hotels${budgetLine} for ${destination} on those dates.\n\nTrip summary: ${summary}.\n\nTry searching directly on:\n• Booking.com\n• Expedia\n• MakeMyTrip\n• Trivago`;
   }
 
-  const liveCount = (payload.sources || []).find((s) => s.live && s.ok)?.count ?? 0;
-  const sourceNote = liveCount > 0
-    ? `${liveCount} live result${liveCount === 1 ? '' : 's'} from Booking.com · prices also compared across Expedia, MakeMyTrip, Trivago, Hotels.com & Agoda`
+  const aiSource = (payload.sources || []).find((s) => s.ai && s.ok);
+  const sourceNote = aiSource
+    ? `${aiSource.count} hotel${aiSource.count === 1 ? '' : 's'} found via ChatGPT · prices compared across Booking.com, Expedia, MakeMyTrip, Trivago, Hotels.com & Agoda`
     : `Prices compared across Booking.com, Expedia, MakeMyTrip, Trivago & more`;
 
   const top = payload.recommendations[0];
-  const budgetClause = tripInfo.budgetValue
-    ? ` within your ₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night budget`
+  const budgetClause = totalBudget
+    ? ` within your total budget of ₹${totalBudget.toLocaleString('en-IN')} (₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night × ${nights} nights)`
     : '';
-  return `Here are hotels for your trip to ${destination}. Found ${payload.recommendations.length} option${payload.recommendations.length === 1 ? '' : 's'}${budgetClause} — top 2 picks include a full price comparison across 6 platforms.\n\n${summary}\n${sourceNote}\n\nTop pick: **${top.name}** at ${top.price}/night.\n\`\`\`json
+  return `Here are hotels for your trip to ${destination}. Found ${payload.recommendations.length} option${payload.recommendations.length === 1 ? '' : 's'}${budgetClause}.\n\n${summary}\n${sourceNote}\n\nTop pick: **${top.name}** at ${top.price}/night (${top.totalPrice} total for ${nights} nights).\n\`\`\`json
 ${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}
 \`\`\``;
 };
@@ -611,7 +624,15 @@ function App() {
             </div>
             <div className="trip-detail">
               <List className="trip-detail-icon" />
-              <span>{tripInfo.budget || <span className="empty-state">No budget info</span>}</span>
+              <span>
+                {tripInfo.budget ? (() => {
+                  const nights = getNightCount(tripInfo.checkIn, tripInfo.checkOut);
+                  const total = tripInfo.budgetValue && nights > 0 ? tripInfo.budgetValue * nights : null;
+                  return total
+                    ? `${tripInfo.budget} · Total ${formatCurrency(total)} for ${nights}n`
+                    : tripInfo.budget;
+                })() : <span className="empty-state">No budget info</span>}
+              </span>
             </div>
             <div className="trip-detail">
               <Hotel className="trip-detail-icon" />

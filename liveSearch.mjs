@@ -1,5 +1,10 @@
 import { chromium } from 'playwright-core';
 
+// ─── Env ──────────────────────────────────────────────────────────────────────
+// Loaded by server.mjs before this module is used.
+
+// ─── Browser helpers (Booking.com fallback) ──────────────────────────────────
+
 const CHROME_PATHS = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
@@ -23,7 +28,7 @@ const findBrowserPath = async () => {
       // try next
     }
   }
-  throw new Error('No supported Chrome or Edge browser was found on this machine.');
+  throw new Error('No supported Chrome or Edge browser found.');
 };
 
 const createPage = async () => {
@@ -31,12 +36,7 @@ const createPage = async () => {
   const browser = await chromium.launch({
     headless: true,
     executablePath,
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage'
-    ]
+    args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
   });
   const context = await browser.newContext({
     locale: 'en-IN',
@@ -52,10 +52,12 @@ const createPage = async () => {
   return { browser, context, page };
 };
 
+// ─── Utility helpers ──────────────────────────────────────────────────────────
+
 const parsePriceToNumber = (value) => {
   if (!value) return null;
-  // Take the minimum ₹ amount — handles both discounts ("₹5,500 ₹4,200" → 4200)
-  // and per-night vs total ("₹9,308 ₹83,772" → 9308, the per-night price)
+  // Use minimum ₹ amount — handles discounts ("₹5,500 ₹4,200" → 4200)
+  // AND per-night vs total ("₹9,308 ₹83,772" → 9308, the per-night price)
   const amounts = [...value.matchAll(/₹\s*([\d,]+)/g)]
     .map((m) => Number(m[1].replace(/,/g, '')))
     .filter((n) => n > 0);
@@ -66,8 +68,7 @@ const parsePriceToNumber = (value) => {
 
 const parseRatingToNumber = (value) => {
   if (!value) return null;
-  // Only accept values in the valid hotel rating range [0, 10]
-  const matches = [...(value.matchAll(/\d+(?:\.\d+)?/g))];
+  const matches = [...value.matchAll(/\d+(?:\.\d+)?/g)];
   for (const m of matches) {
     const n = Number(m[0]);
     if (n >= 1 && n <= 10) return n;
@@ -79,60 +80,49 @@ const normalizeAmenities = (items = []) =>
   [...new Set(items.map((item) => item.trim()).filter(Boolean))].slice(0, 5);
 
 const formatINR = (value) =>
-  new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    maximumFractionDigits: 0
-  }).format(Math.round(value));
+  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Math.round(value));
 
-const getNightCount = (checkIn, checkOut) => {
+export const getNightCount = (checkIn, checkOut) => {
   const start = new Date(`${checkIn}T00:00:00Z`).getTime();
   const end = new Date(`${checkOut}T00:00:00Z`).getTime();
   if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 1;
   return Math.max(1, Math.round((end - start) / (1000 * 60 * 60 * 24)));
 };
 
-// Deterministic hash so the same hotel always shows the same platform variation
 const hashCode = (str) => {
   let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
-    hash = hash & 0x7fffffff;
-  }
+  for (let i = 0; i < str.length; i++) hash = (((hash << 5) + hash) ^ str.charCodeAt(i)) & 0x7fffffff;
   return hash;
 };
 
-// Generate realistic price estimates for other platforms based on Booking.com live price
+// ─── Platform price comparison ────────────────────────────────────────────────
+
 const generatePlatformPrices = (hotel) => {
   const seed = hashCode(hotel.name + hotel.area);
   const base = hotel.priceValue;
-
-  const platforms = [
-    { name: 'Expedia', pctOffset: ((seed % 13) - 2) / 100 },
-    { name: 'MakeMyTrip', pctOffset: (((seed >> 4) % 12) - 6) / 100 },
-    { name: 'Trivago', pctOffset: (((seed >> 8) % 15) - 5) / 100 },
-    { name: 'Hotels.com', pctOffset: (((seed >> 12) % 10) - 1) / 100 },
-    { name: 'Agoda', pctOffset: (((seed >> 16) % 14) - 8) / 100 }
-  ];
-
-  return platforms.map(({ name, pctOffset }) => ({
+  return [
+    { name: 'Expedia',     pctOffset: ((seed % 13) - 2) / 100 },
+    { name: 'MakeMyTrip',  pctOffset: (((seed >> 4) % 12) - 6) / 100 },
+    { name: 'Trivago',     pctOffset: (((seed >> 8) % 15) - 5) / 100 },
+    { name: 'Hotels.com',  pctOffset: (((seed >> 12) % 10) - 1) / 100 },
+    { name: 'Agoda',       pctOffset: (((seed >> 16) % 14) - 8) / 100 }
+  ].map(({ name, pctOffset }) => ({
     platform: name,
     priceValue: Math.max(500, Math.round(base * (1 + pctOffset))),
     live: false
   }));
 };
 
-// Build the comparison table for a hotel (live Booking.com + estimated others)
 const buildPlatformComparison = (hotel) => {
+  const isLive = hotel.source === 'Booking.com';
   const estimated = generatePlatformPrices(hotel);
   const all = [
-    { platform: 'Booking.com', priceValue: hotel.priceValue, live: true },
+    { platform: isLive ? 'Booking.com' : 'AI Estimate', priceValue: hotel.priceValue, live: isLive },
     ...estimated
   ].sort((a, b) => a.priceValue - b.priceValue);
 
   const cheapest = all[0];
   const mostExpensive = all[all.length - 1];
-
   return {
     platforms: all.map((p) => ({
       platform: p.platform,
@@ -148,20 +138,21 @@ const buildPlatformComparison = (hotel) => {
   };
 };
 
-// Detailed reason for top-2 recommended hotels
-const buildDetailedReason = (tripInfo, hotel, rank) => {
-  const nights = getNightCount(tripInfo.checkIn, tripInfo.checkOut);
-  const totalCost = hotel.totalPriceValue || hotel.priceValue * nights;
+// ─── Recommendation builders ──────────────────────────────────────────────────
 
+const buildDetailedReason = (tripInfo, hotel, rank, nights) => {
+  const totalCost = hotel.totalPriceValue || hotel.priceValue * nights;
+  const totalBudget = tripInfo.budgetValue ? tripInfo.budgetValue * nights : null;
   const sentences = [];
 
   if (rank === 0) {
     if (tripInfo.budgetValue) {
       if (hotel.priceValue <= tripInfo.budgetValue) {
-        const saved = tripInfo.budgetValue - hotel.priceValue;
+        const savedPerNight = tripInfo.budgetValue - hotel.priceValue;
+        const savedTotal = savedPerNight * nights;
         sentences.push(
-          saved > 0
-            ? `Excellent value — ${formatINR(saved)}/night under your budget, saving you ${formatINR(saved * nights)} over ${nights} night${nights > 1 ? 's' : ''}.`
+          savedPerNight > 0
+            ? `Excellent value — ${formatINR(savedPerNight)}/night under your budget, saving you ${formatINR(savedTotal)} over ${nights} night${nights > 1 ? 's' : ''}.`
             : `Right at your budget with solid overall value.`
         );
       } else {
@@ -178,58 +169,42 @@ const buildDetailedReason = (tripInfo, hotel, rank) => {
     }
   }
 
-  if (hotel.amenities.length) {
-    sentences.push(`Includes: ${hotel.amenities.slice(0, 3).join(', ')}.`);
-  }
+  if (hotel.amenities.length) sentences.push(`Includes: ${hotel.amenities.slice(0, 3).join(', ')}.`);
 
   if (tripInfo.amenities.length && hotel.amenities.length) {
     const matched = tripInfo.amenities.filter((a) =>
       hotel.amenities.some((ha) => ha.toLowerCase().includes(a.toLowerCase()))
     );
-    if (matched.length) {
-      sentences.push(`Matches your must-haves: ${matched.join(', ')}.`);
-    }
+    if (matched.length) sentences.push(`Matches your must-haves: ${matched.join(', ')}.`);
   }
 
-  if (tripInfo.locationPreference) {
-    sentences.push(`Located near ${tripInfo.locationPreference}.`);
-  }
+  if (tripInfo.locationPreference) sentences.push(`Located near ${tripInfo.locationPreference}.`);
 
-  sentences.push(
-    `Total stay: ${formatINR(totalCost)} for ${nights} night${nights > 1 ? 's' : ''}.`
-  );
+  sentences.push(`Total stay cost: ${formatINR(totalCost)} for ${nights} night${nights > 1 ? 's' : ''}${totalBudget ? ` (total budget: ${formatINR(totalBudget)})` : ''}.`);
 
   return sentences.join(' ');
 };
 
-// Fallback short reason for non-recommended hotels
 const buildShortReason = (tripInfo, hotel) => {
   const parts = [];
   if (tripInfo.budgetValue && hotel.priceValue <= tripInfo.budgetValue) {
     parts.push(`fits your ${formatINR(tripInfo.budgetValue)}/night budget`);
   }
-  if (hotel.rating && hotel.rating !== 'N/A') {
-    parts.push(`rated ${hotel.rating}/10`);
-  }
-  if (tripInfo.locationPreference) {
-    parts.push(`near ${tripInfo.locationPreference}`);
-  }
+  if (hotel.rating && hotel.rating !== 'N/A') parts.push(`rated ${hotel.rating}/10`);
+  if (tripInfo.locationPreference) parts.push(`near ${tripInfo.locationPreference}`);
   return parts.length
-    ? `Live result from ${hotel.source} — ${parts.join(', ')}.`
-    : `Live result from ${hotel.source} for your dates.`;
+    ? `${hotel.source} result — ${parts.join(', ')}.`
+    : `${hotel.source} result for your dates.`;
 };
 
-// Score each hotel so we can rank them
 const scoreHotel = (tripInfo, hotel) => {
   let score = 0;
-  const rating = hotel.rating || 0;
-  score += rating * 12; // up to ~120 pts for a 10-rated hotel
+  score += (hotel.rating || 0) * 12;
 
   if (tripInfo.budgetValue) {
     if (hotel.priceValue <= tripInfo.budgetValue) {
       score += 60;
-      const savings = tripInfo.budgetValue - hotel.priceValue;
-      score += Math.min(20, savings / 200);
+      score += Math.min(20, (tripInfo.budgetValue - hotel.priceValue) / 200);
     } else {
       score -= Math.min(40, (hotel.priceValue - tripInfo.budgetValue) / 200);
     }
@@ -242,9 +217,7 @@ const scoreHotel = (tripInfo, hotel) => {
     score += (matchCount / tripInfo.amenities.length) * 30;
   }
 
-  // Slight price penalty to prefer cheaper when scores are close
   score -= hotel.priceValue / 10000;
-
   return score;
 };
 
@@ -253,13 +226,12 @@ const buildHotelRec = (tripInfo, hotel, index, nights) => {
   const recommendationType = index === 0 ? 'Best Value' : index === 1 ? 'Top Rated' : null;
   const platformComparison = isRecommended ? buildPlatformComparison(hotel) : null;
   const comparisonLines = platformComparison
-    ? platformComparison.platforms.map(
-        (p) => `${p.platform}: ${p.price}${p.live ? ' (live)' : ' (est.)'}`
-      )
+    ? platformComparison.platforms.map((p) => `${p.platform}: ${p.price}${p.live ? ' (live)' : ' (est.)'}`)
     : [`${hotel.source}: ${formatINR(hotel.priceValue)}`];
   const bestProvider = platformComparison
-    ? `Book on ${platformComparison.cheapestPlatform} for ${platformComparison.cheapestPrice}/night — cheapest across platforms, saving up to ${platformComparison.savings} vs the highest listed price.`
-    : `${hotel.source} currently has this listing available for your dates.`;
+    ? `Book on ${platformComparison.cheapestPlatform} for ${platformComparison.cheapestPrice}/night — cheapest across platforms, saving up to ${platformComparison.savings}.`
+    : `${hotel.source} has this listing available for your dates.`;
+
   return {
     name: hotel.name,
     area: hotel.area,
@@ -275,7 +247,7 @@ const buildHotelRec = (tripInfo, hotel, index, nights) => {
     isRecommended,
     recommendationType,
     reason: isRecommended
-      ? buildDetailedReason(tripInfo, hotel, index)
+      ? buildDetailedReason(tripInfo, hotel, index, nights)
       : buildShortReason(tripInfo, hotel),
     platformComparison,
     comparison: comparisonLines,
@@ -284,34 +256,30 @@ const buildHotelRec = (tripInfo, hotel, index, nights) => {
   };
 };
 
-const buildLiveRecommendations = (tripInfo, hotels) => {
-  if (!hotels.length) {
-    return { recommendations: [], noBudgetResults: false, cheapestAlternative: null };
-  }
+const buildLiveRecommendations = (tripInfo, hotels, nights) => {
+  if (!hotels.length) return { recommendations: [], noBudgetResults: false, cheapestAlternative: null };
 
-  const nights = getNightCount(tripInfo.checkIn, tripInfo.checkOut);
-
-  // Only include hotels at or under the user's per-night budget
+  // Filter: hotel's TOTAL stay cost must be within the user's total budget
+  // total budget = perNight × nights, so this is equivalent to priceValue <= perNightBudget
   const pool = tripInfo.budgetValue
     ? hotels.filter((h) => h.priceValue <= tripInfo.budgetValue)
     : hotels;
 
-  if (!pool.length) {
-    if (tripInfo.budgetValue) {
-      const cheapest = [...hotels].sort((a, b) => a.priceValue - b.priceValue)[0];
-      const cheapestRec = cheapest
-        ? { ...buildHotelRec(tripInfo, cheapest, 0, nights), isRecommended: false, recommendationType: null, overBudgetFallback: true }
-        : null;
-      return {
-        recommendations: cheapestRec ? [cheapestRec] : [],
-        noBudgetResults: true,
-        cheapestAlternative: cheapestRec
-          ? { name: cheapestRec.name, area: cheapestRec.area, price: cheapestRec.price, totalPrice: cheapestRec.totalPrice }
-          : null
-      };
-    }
-    return { recommendations: [], noBudgetResults: false, cheapestAlternative: null };
+  if (!pool.length && tripInfo.budgetValue) {
+    const cheapest = [...hotels].sort((a, b) => a.priceValue - b.priceValue)[0];
+    const cheapestRec = cheapest
+      ? { ...buildHotelRec(tripInfo, cheapest, 0, nights), isRecommended: false, recommendationType: null, overBudgetFallback: true }
+      : null;
+    return {
+      recommendations: cheapestRec ? [cheapestRec] : [],
+      noBudgetResults: true,
+      cheapestAlternative: cheapestRec
+        ? { name: cheapestRec.name, area: cheapestRec.area, price: cheapestRec.price, totalPrice: cheapestRec.totalPrice }
+        : null
+    };
   }
+
+  if (!pool.length) return { recommendations: [], noBudgetResults: false, cheapestAlternative: null };
 
   const scored = pool
     .map((hotel) => ({ ...hotel, score: scoreHotel(tripInfo, hotel) }))
@@ -325,23 +293,103 @@ const buildLiveRecommendations = (tripInfo, hotels) => {
   return { recommendations, noBudgetResults: false, cheapestAlternative: null };
 };
 
-// ─── Scrapers ────────────────────────────────────────────────────────────────
+// ─── OpenAI hotel search (primary) ───────────────────────────────────────────
 
-const scrapeBooking = async ({ destination, checkIn, checkOut, guests }) => {
+const searchHotelsWithOpenAI = async (tripInfo, nights) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY not configured in .env');
+
+  const { default: OpenAI } = await import('openai');
+  const openai = new OpenAI({ apiKey });
+
+  const perNightBudget = tripInfo.budgetValue;
+  const totalBudget = perNightBudget ? perNightBudget * nights : null;
+
+  const budgetInstruction = perNightBudget
+    ? `STRICT BUDGET RULE: The user's per-night budget is ₹${perNightBudget}. For ${nights} nights their total trip budget is ₹${totalBudget}. Every hotel you return MUST have pricePerNight ≤ ${perNightBudget}. Do NOT suggest any hotel above this price.`
+    : 'No budget constraint — include a range of options.';
+
+  const amenityLine = tripInfo.amenities.length
+    ? `Preferred amenities: ${tripInfo.amenities.join(', ')}.`
+    : '';
+
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a hotel search assistant. Respond ONLY with valid JSON. No markdown, no explanation, no code blocks.'
+      },
+      {
+        role: 'user',
+        content: `Find 8 real hotels in ${tripInfo.destination} for ${tripInfo.guests} guest(s).
+Check-in: ${tripInfo.checkIn}, Check-out: ${tripInfo.checkOut} (${nights} nights).
+${budgetInstruction}
+${amenityLine}
+
+Return this JSON object (no other text):
+{
+  "hotels": [
+    {
+      "name": "Exact real hotel name",
+      "area": "Specific neighborhood or area within ${tripInfo.destination}",
+      "pricePerNight": <integer INR, MUST be ≤ ${perNightBudget || 100000}>,
+      "rating": <float between 1.0 and 10.0>,
+      "amenities": ["wifi", "pool", "breakfast", ...]
+    }
+  ]
+}`
+      }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+    max_tokens: 2000
+  });
+
+  let parsed;
+  try {
+    parsed = JSON.parse(response.choices[0].message.content);
+  } catch {
+    return [];
+  }
+
+  const raw = Array.isArray(parsed) ? parsed : (parsed.hotels || []);
+
+  return raw
+    .filter((h) => h.name && typeof h.pricePerNight === 'number' && h.pricePerNight > 0)
+    .filter((h) => !perNightBudget || h.pricePerNight <= perNightBudget)
+    .map((h) => ({
+      source: 'AI Estimated',
+      name: h.name,
+      area: h.area || tripInfo.destination,
+      priceValue: Math.round(h.pricePerNight),
+      totalPriceValue: Math.round(h.pricePerNight) * nights,
+      priceText: `₹${Math.round(h.pricePerNight).toLocaleString('en-IN')}`,
+      rating: typeof h.rating === 'number'
+        ? parseFloat(Math.min(10, Math.max(1, h.rating)).toFixed(1))
+        : null,
+      image: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900',
+      link: `https://www.booking.com/search.html?ss=${encodeURIComponent(h.name + ' ' + tripInfo.destination)}`,
+      amenities: normalizeAmenities(h.amenities || [])
+    }));
+};
+
+// ─── Booking.com scraper (fallback) ──────────────────────────────────────────
+
+const scrapeBooking = async (tripInfo, nights) => {
   const { browser, context, page } = await createPage();
-  const nights = getNightCount(checkIn, checkOut);
 
   try {
     const params = new URLSearchParams({
-      ss: destination,
-      checkin: checkIn,
-      checkout: checkOut,
-      group_adults: String(guests || 2),
+      ss: tripInfo.destination,
+      checkin: tripInfo.checkIn,
+      checkout: tripInfo.checkOut,
+      group_adults: String(tripInfo.guests || 2),
       no_rooms: '1',
       lang: 'en-gb',
       selected_currency: 'INR',
       currency: 'INR',
-      order: 'price'   // sort by lowest price so budget-friendly hotels appear first
+      order: 'price'
     });
 
     await page.goto(`https://www.booking.com/searchresults.html?${params.toString()}`, {
@@ -349,48 +397,27 @@ const scrapeBooking = async ({ destination, checkIn, checkOut, guests }) => {
       timeout: 60000
     });
 
-    // Wait for property cards or timeout gracefully
-    await page
-      .locator('[data-testid="property-card"]')
-      .first()
-      .waitFor({ timeout: 25000 })
-      .catch(() => {});
-
-    // Scroll to trigger any lazy-loaded prices
+    await page.locator('[data-testid="property-card"]').first().waitFor({ timeout: 25000 }).catch(() => {});
     await page.evaluate(() => window.scrollBy(0, 800)).catch(() => {});
     await page.waitForTimeout(1000).catch(() => {});
 
     const hotels = await page.locator('[data-testid="property-card"]').evaluateAll((cards) =>
       cards.slice(0, 15).map((card) => {
         const text = (sel) => card.querySelector(sel)?.textContent?.trim() ?? '';
-
         const image =
           card.querySelector('img[data-src]')?.getAttribute('data-src') ||
-          card.querySelector('img')?.getAttribute('src') ||
-          '';
+          card.querySelector('img')?.getAttribute('src') || '';
         const link = card.querySelector('a[data-testid="title-link"]')?.href ?? '';
         const amenityNodes = Array.from(card.querySelectorAll(
           '[data-testid="facility-list"] span, [data-testid="facility-list"] div, ' +
-          '[data-testid="property-card-amenities"] li, ' +
-          '[data-testid="property-card-amenities"] span, ' +
-          '.bui-list__item'
+          '[data-testid="property-card-amenities"] li, [data-testid="property-card-amenities"] span, .bui-list__item'
         ));
-
-        // Extract price: try specific selectors, then scan all leaf nodes for a ₹ amount
         const priceText = (() => {
-          const selectors = [
-            '[data-testid="price-and-discounted-price"]',
-            '[data-testid="price-and-discount-price"]',
-            '[data-testid="price"]',
-            '[class*="prco-valign"]'
-          ];
-          for (const sel of selectors) {
+          for (const sel of ['[data-testid="price-and-discounted-price"]', '[data-testid="price-and-discount-price"]', '[data-testid="price"]', '[class*="prco-valign"]']) {
             const el = card.querySelector(sel);
             if (el && el.textContent.includes('₹')) return el.textContent.trim();
           }
-          // Scan leaf nodes for a bare ₹ price (e.g. "₹4,500")
-          const allEls = Array.from(card.querySelectorAll('*'));
-          for (const el of allEls) {
+          for (const el of Array.from(card.querySelectorAll('*'))) {
             if (el.children.length === 0) {
               const t = el.textContent.trim();
               if (/^₹[\d,]+$/.test(t)) return t;
@@ -398,21 +425,15 @@ const scrapeBooking = async ({ destination, checkIn, checkOut, guests }) => {
           }
           return '';
         })();
-
         const ratingText =
           text('[data-testid="review-score"]') ||
           card.querySelector('[aria-label*="Scored"]')?.getAttribute('aria-label') ||
           text('[data-testid="review-score-badge"]') ||
-          card.querySelector('[class*="score"]')?.textContent?.trim() ||
-          '';
-
+          card.querySelector('[class*="score"]')?.textContent?.trim() || '';
         return {
           name: text('[data-testid="title"]') || text('[data-testid="property-card-title"]'),
           area: text('[data-testid="address"]') || text('[data-testid="property-card-address"]'),
-          priceText,
-          ratingText,
-          image,
-          link,
+          priceText, ratingText, image, link,
           amenities: amenityNodes.map((n) => n.textContent?.trim() ?? '').filter(Boolean)
         };
       })
@@ -421,7 +442,6 @@ const scrapeBooking = async ({ destination, checkIn, checkOut, guests }) => {
     return hotels
       .filter((h) => h.name && h.priceText && h.priceText.includes('₹'))
       .map((h) => {
-        // Booking.com search results show the per-night price — use it directly
         const priceValue = parsePriceToNumber(h.priceText);
         return {
           source: 'Booking.com',
@@ -431,14 +451,11 @@ const scrapeBooking = async ({ destination, checkIn, checkOut, guests }) => {
           totalPriceValue: priceValue ? priceValue * nights : null,
           priceText: h.priceText,
           rating: parseRatingToNumber(h.ratingText),
-          image:
-            h.image ||
-            'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900',
+          image: h.image || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900',
           link: h.link,
           amenities: normalizeAmenities(h.amenities)
         };
       })
-      // Sanity: filter out zero, negative, or unrealistically low/high prices
       .filter((h) => h.priceValue >= 200 && h.priceValue <= 1000000);
   } finally {
     await context.close();
@@ -460,49 +477,61 @@ export const searchHotels = async ({
     throw new Error('destination, checkIn, and checkOut are required.');
   }
 
+  const nights = getNightCount(checkIn, checkOut);
+  const perNightBudget = budget ? Number(budget) : null;
+  // Total budget = per-night × number of nights
+  const totalBudget = perNightBudget ? perNightBudget * nights : null;
+
   const tripInfo = {
     destination,
     checkIn,
     checkOut,
     guests: Number(guests) || 2,
-    budgetValue: budget ? Number(budget) : null,
-    amenities: String(amenities)
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean)
+    budgetValue: perNightBudget,
+    amenities: String(amenities).split(',').map((item) => item.trim()).filter(Boolean)
   };
 
-  let liveHotels = [];
+  let hotels = [];
   const sources = [];
 
-  // Booking.com — our primary live source
+  // Primary: OpenAI (reliable budget accuracy)
   try {
-    liveHotels = await scrapeBooking(tripInfo);
-    sources.push({ source: 'Booking.com', ok: true, count: liveHotels.length, error: '', live: true });
-  } catch (err) {
+    hotels = await searchHotelsWithOpenAI(tripInfo, nights);
+    sources.push({ source: 'ChatGPT', ok: true, count: hotels.length, error: '', live: false, ai: true });
+  } catch (aiErr) {
     sources.push({
-      source: 'Booking.com',
+      source: 'ChatGPT',
       ok: false,
       count: 0,
-      error: err instanceof Error ? err.message : 'Scrape failed.',
-      live: true
+      error: aiErr instanceof Error ? aiErr.message : 'AI search failed.',
+      live: false,
+      ai: true
     });
+
+    // Fallback: Booking.com scraper
+    try {
+      hotels = await scrapeBooking(tripInfo, nights);
+      sources.push({ source: 'Booking.com', ok: true, count: hotels.length, error: '', live: true });
+    } catch (scrapeErr) {
+      sources.push({
+        source: 'Booking.com',
+        ok: false,
+        count: 0,
+        error: scrapeErr instanceof Error ? scrapeErr.message : 'Scrape failed.',
+        live: true
+      });
+    }
   }
 
-  // Other platforms — prices generated from the live Booking.com baseline
-  const estimatedPlatforms = ['Expedia', 'MakeMyTrip', 'Trivago', 'Hotels.com', 'Agoda'];
-  estimatedPlatforms.forEach((name) => {
-    sources.push({
-      source: name,
-      ok: liveHotels.length > 0,
-      count: liveHotels.length,
-      error: liveHotels.length === 0 ? 'No base data for price estimation' : '',
-      live: false,
-      estimated: true
-    });
-  });
+  const { recommendations, noBudgetResults, cheapestAlternative } = buildLiveRecommendations(tripInfo, hotels, nights);
 
-  const { recommendations, noBudgetResults, cheapestAlternative } = buildLiveRecommendations(tripInfo, liveHotels);
-
-  return { recommendations, sources, noBudgetResults, cheapestAlternative };
+  return {
+    recommendations,
+    sources,
+    noBudgetResults,
+    cheapestAlternative,
+    perNightBudget,
+    totalBudget,
+    nights
+  };
 };
