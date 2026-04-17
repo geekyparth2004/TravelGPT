@@ -17,6 +17,21 @@ const AMENITY_KEYWORDS = [
   'family rooms'
 ];
 
+const AMENITY_ICONS = {
+  'wifi': '📶',
+  'breakfast': '🍳',
+  'pool': '🏊',
+  'gym': '💪',
+  'spa': '💆',
+  'parking': '🚗',
+  'airport shuttle': '✈️',
+  'beach access': '🏖️',
+  'pet friendly': '🐾',
+  'free cancellation': '↩️',
+  'workspace': '💻',
+  'family rooms': '👨‍👩‍👧'
+};
+
 const KNOWN_DESTINATIONS = ['goa', 'paris', 'dubai', 'london', 'tokyo', 'bali', 'new york', 'singapore', 'bangkok', 'rome'];
 
 const MONTH_LOOKUP = {
@@ -422,16 +437,12 @@ const createRecommendationsMessage = (tripInfo, payload) => {
 
   if (payload.noBudgetResults) {
     const cheapest = payload.cheapestAlternative;
-    const budgetSummary = totalBudget
-      ? ` (₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night × ${nights} nights = ₹${totalBudget.toLocaleString('en-IN')} total budget)`
-      : '';
-    const cheapestLine = cheapest
-      ? ` The lowest option available is **${cheapest.name}** at ${cheapest.price}/night (${cheapest.totalPrice} total for ${nights} nights).`
-      : '';
-    const cardBlock = payload.recommendations.length
-      ? `\n\`\`\`json\n${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}\n\`\`\``
-      : '';
-    return `No hotels found within your budget${budgetSummary} for ${destination}.${cheapestLine}\n\nTrip summary: ${summary}${cardBlock}`;
+    const perNight = tripInfo.budgetValue ? `₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night` : '';
+    const totalStr = totalBudget ? `₹${totalBudget.toLocaleString('en-IN')} total (${perNight} × ${nights} nights)` : perNight;
+    const cheapestNote = cheapest
+      ? `\n\nThe cheapest available option is **${cheapest.name}** at ${cheapest.price}/night (${cheapest.totalPrice} for ${nights} nights) — still over your budget. Try increasing your budget or choosing different dates.`
+      : `\n\nTry a higher budget or different dates.`;
+    return `Sorry, no hotels were found within your budget of ${totalStr} for ${destination}.\n\nTrip summary: ${summary}${cheapestNote}`;
   }
 
   if (!payload.recommendations.length) {
@@ -490,11 +501,13 @@ function App() {
   const [isTyping, setIsTyping] = useState(false);
   const [tripInfo, setTripInfo] = useState(EMPTY_TRIP_INFO);
   const [dateDraft, setDateDraft] = useState('');
+  const [amenityDraft, setAmenityDraft] = useState([]);
   const messagesEndRef = useRef(null);
   const dateInputRef = useRef(null);
 
   const missingFields = getMissingFields(tripInfo);
   const activeDateField = ['checkIn', 'checkOut'].includes(missingFields[0]) ? missingFields[0] : '';
+  const activeAmenityField = missingFields[0] === 'amenities';
   const dateFieldLabel = activeDateField === 'checkOut' ? 'check-out' : 'check-in';
   const activeDateValue = activeDateField === 'checkOut' ? tripInfo.checkOut : tripInfo.checkIn;
   const visibleDateValue = dateDraft || activeDateValue || '';
@@ -587,6 +600,45 @@ function App() {
     setIsTyping(false);
   };
 
+  const toggleAmenity = (amenity) => {
+    setAmenityDraft((prev) =>
+      prev.includes(amenity) ? prev.filter((a) => a !== amenity) : [...prev, amenity]
+    );
+  };
+
+  const handleAmenitySave = async (selected) => {
+    const amenities = selected.length ? selected : ['any'];
+    const nextTripInfo = { ...tripInfo, amenities };
+    setTripInfo(nextTripInfo);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'user',
+        content: selected.length
+          ? `Amenities: ${selected.join(', ')}`
+          : 'No specific amenity preference'
+      }
+    ]);
+    setAmenityDraft([]);
+    setIsTyping(true);
+    const assistantMessage = await generateAssistantReply(nextTripInfo);
+    setMessages((prev) => [...prev, assistantMessage]);
+    setIsTyping(false);
+  };
+
+  const renderText = (text) => {
+    const lines = text.split('\n');
+    return lines.map((line, li) => {
+      const parts = line.split(/(\*\*[^*]+\*\*)/g);
+      const nodes = parts.map((part, pi) =>
+        part.startsWith('**') && part.endsWith('**')
+          ? <strong key={pi}>{part.slice(2, -2)}</strong>
+          : <span key={pi}>{part}</span>
+      );
+      return <span key={li}>{nodes}{li < lines.length - 1 && <br />}</span>;
+    });
+  };
+
   return (
     <div className="app-container">
       <header className="app-header">
@@ -636,7 +688,17 @@ function App() {
             </div>
             <div className="trip-detail">
               <Hotel className="trip-detail-icon" />
-              <span>{tripInfo.amenities.length ? tripInfo.amenities.join(', ') : <span className="empty-state">Amenities not chosen</span>}</span>
+              <span>
+                {tripInfo.amenities.filter(a => a !== 'any').length
+                  ? <span className="sidebar-amenity-chips">
+                      {tripInfo.amenities.filter(a => a !== 'any').map(a => (
+                        <span key={a} className="sidebar-amenity-chip">
+                          {AMENITY_ICONS[a] || ''} {a}
+                        </span>
+                      ))}
+                    </span>
+                  : <span className="empty-state">Amenities not chosen</span>}
+              </span>
             </div>
             <div className="trip-detail">
               <Plane className="trip-detail-icon" />
@@ -651,9 +713,9 @@ function App() {
           </div>
 
           <div className="sidebar-section sidebar-note">
-            <p className="sidebar-note-title">Live Search Mode</p>
+            <p className="sidebar-note-title">AI-Powered Search</p>
             <p className="sidebar-note-copy">
-              TravelGPT now tries live hotel scraping when all required details are complete. Source failures are shown explicitly instead of replaced with fake data.
+              Hotels are found via ChatGPT and strictly filtered to your per-night budget. Booking.com is used as fallback if AI search fails.
             </p>
           </div>
         </aside>
@@ -666,7 +728,7 @@ function App() {
               return (
                 <div key={`${message.role}-${index}`} className={`message ${message.role}`}>
                   <div className="message-content">
-                    <div className="message-text">{text}</div>
+                    <div className="message-text">{renderText(text)}</div>
                     {data?.recommendations && (
                       <div className="hotel-cards-container">
                         {data.recommendations.map((hotel, hotelIndex) => (
@@ -704,7 +766,9 @@ function App() {
 
                               <div className="hotel-amenities">
                                 {(hotel.amenities || []).map((amenity, i) => (
-                                  <span key={`${amenity}-${i}`} className="amenity-tag">{amenity}</span>
+                                  <span key={`${amenity}-${i}`} className="amenity-tag">
+                                    {AMENITY_ICONS[amenity.toLowerCase()] || ''} {amenity}
+                                  </span>
                                 ))}
                               </div>
 
@@ -812,6 +876,47 @@ function App() {
                 />
                 <button type="button" className="date-save-btn" onClick={handleDateSave} disabled={!visibleDateValue}>
                   Save {dateFieldLabel}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeAmenityField && (
+            <div className="amenity-picker-dock">
+              <div className="amenity-picker-header">
+                <p className="amenity-picker-title">Select your must-have amenities</p>
+                <p className="amenity-picker-subtitle">Tap to select — we'll only show hotels that match</p>
+              </div>
+              <div className="amenity-grid">
+                {AMENITY_KEYWORDS.map((amenity) => (
+                  <button
+                    key={amenity}
+                    type="button"
+                    className={`amenity-chip${amenityDraft.includes(amenity) ? ' amenity-chip--active' : ''}`}
+                    onClick={() => toggleAmenity(amenity)}
+                  >
+                    <span className="amenity-chip-icon">{AMENITY_ICONS[amenity]}</span>
+                    <span className="amenity-chip-label">{amenity}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="amenity-picker-actions">
+                <button
+                  type="button"
+                  className="amenity-skip-btn"
+                  onClick={() => handleAmenitySave([])}
+                >
+                  No preference, skip
+                </button>
+                <button
+                  type="button"
+                  className="amenity-confirm-btn"
+                  onClick={() => handleAmenitySave(amenityDraft)}
+                  disabled={!amenityDraft.length}
+                >
+                  {amenityDraft.length
+                    ? `Confirm ${amenityDraft.length} amenit${amenityDraft.length === 1 ? 'y' : 'ies'}`
+                    : 'Select at least one'}
                 </button>
               </div>
             </div>

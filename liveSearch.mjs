@@ -210,11 +210,12 @@ const scoreHotel = (tripInfo, hotel) => {
     }
   }
 
-  if (tripInfo.amenities.length && hotel.amenities.length) {
-    const matchCount = tripInfo.amenities.filter((a) =>
+  const scorableAmenities = tripInfo.amenities.filter((a) => a !== 'any');
+  if (scorableAmenities.length && hotel.amenities.length) {
+    const matchCount = scorableAmenities.filter((a) =>
       hotel.amenities.some((ha) => ha.toLowerCase().includes(a.toLowerCase()))
     ).length;
-    score += (matchCount / tripInfo.amenities.length) * 30;
+    score += (matchCount / scorableAmenities.length) * 30;
   }
 
   score -= hotel.priceValue / 10000;
@@ -266,15 +267,18 @@ const buildLiveRecommendations = (tripInfo, hotels, nights) => {
     : hotels;
 
   if (!pool.length && tripInfo.budgetValue) {
+    // Never show overbudget hotel cards — just report the cheapest available price
     const cheapest = [...hotels].sort((a, b) => a.priceValue - b.priceValue)[0];
-    const cheapestRec = cheapest
-      ? { ...buildHotelRec(tripInfo, cheapest, 0, nights), isRecommended: false, recommendationType: null, overBudgetFallback: true }
-      : null;
     return {
-      recommendations: cheapestRec ? [cheapestRec] : [],
+      recommendations: [],
       noBudgetResults: true,
-      cheapestAlternative: cheapestRec
-        ? { name: cheapestRec.name, area: cheapestRec.area, price: cheapestRec.price, totalPrice: cheapestRec.totalPrice }
+      cheapestAlternative: cheapest
+        ? {
+            name: cheapest.name,
+            area: cheapest.area,
+            price: formatINR(cheapest.priceValue),
+            totalPrice: formatINR(cheapest.priceValue * nights)
+          }
         : null
     };
   }
@@ -309,8 +313,9 @@ const searchHotelsWithOpenAI = async (tripInfo, nights) => {
     ? `STRICT BUDGET RULE: The user's per-night budget is ₹${perNightBudget}. For ${nights} nights their total trip budget is ₹${totalBudget}. Every hotel you return MUST have pricePerNight ≤ ${perNightBudget}. Do NOT suggest any hotel above this price.`
     : 'No budget constraint — include a range of options.';
 
-  const amenityLine = tripInfo.amenities.length
-    ? `Preferred amenities: ${tripInfo.amenities.join(', ')}.`
+  const realAmenities = tripInfo.amenities.filter((a) => a !== 'any');
+  const amenityLine = realAmenities.length
+    ? `Preferred amenities: ${realAmenities.join(', ')}.`
     : '';
 
   const response = await openai.chat.completions.create({

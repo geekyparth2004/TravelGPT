@@ -508,13 +508,6 @@ h1, h2, h3, h4, h5, h6 {
   margin-bottom: 0.75rem;
 }
 
-.amenity-tag {
-  background: var(--bg-input);
-  color: var(--text-muted);
-  font-size: 0.7rem;
-  padding: 2px 8px;
-  border-radius: 12px;
-}
 
 .hotel-source-list {
   display: flex;
@@ -780,6 +773,166 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 1rem;
   font-size: 0.85rem;
   color: var(--text-muted);
+}
+
+/* ── Amenity Picker Dock ────────────────────────────────────────────────────── */
+.amenity-picker-dock {
+  padding: 1rem 1.25rem 0.75rem;
+  border-top: 1px solid var(--glass-border);
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(8px);
+  animation: slideUp 0.25s ease-out;
+}
+
+.amenity-picker-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.amenity-picker-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.amenity-picker-subtitle {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.amenity-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.amenity-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border-color);
+  background: var(--bg-dark);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  user-select: none;
+  font-family: inherit;
+}
+
+.amenity-chip:hover {
+  border-color: var(--primary);
+  color: var(--text-main);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.amenity-chip--active {
+  border-color: var(--primary);
+  background: rgba(59, 130, 246, 0.18);
+  color: #93c5fd;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+
+.amenity-chip-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.amenity-chip-label {
+  text-transform: capitalize;
+}
+
+.amenity-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.amenity-skip-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  padding: 7px 16px;
+  border-radius: 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  font-family: inherit;
+}
+
+.amenity-skip-btn:hover {
+  border-color: var(--text-muted);
+  color: var(--text-main);
+}
+
+.amenity-confirm-btn {
+  height: 36px;
+  padding: 0 1.25rem;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  font-family: inherit;
+}
+
+.amenity-confirm-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.amenity-confirm-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Sidebar amenity chips ──────────────────────────────────────────────────── */
+.sidebar-amenity-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.sidebar-amenity-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.72rem;
+  background: rgba(59, 130, 246, 0.12);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+/* ── Improved amenity tags in hotel cards ───────────────────────────────────── */
+.amenity-tag {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* ── Animations ─────────────────────────────────────────────────────────────── */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* Animations */
