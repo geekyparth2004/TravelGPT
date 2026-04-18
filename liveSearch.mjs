@@ -361,58 +361,32 @@ const buildCheapestAlternative = (hotels, nights) => {
 
 // ─── OpenAI hotel search (primary) ───────────────────────────────────────────
 
-const searchHotelsWithOpenAI = async (tripInfo, nights) => {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY not configured in .env');
-
-  const { default: OpenAI } = await import('openai');
-  const openai = new OpenAI({ apiKey });
-
-  const perNightBudget = tripInfo.budgetValue;
-  const totalBudget = perNightBudget ? perNightBudget * nights : null;
-
-  const budgetInstruction = perNightBudget
-    ? `Budget preference: ₹${perNightBudget}/night (total trip budget ₹${totalBudget} for ${nights} nights). Strongly prefer hotels at or below ₹${perNightBudget}/night. If the destination is expensive and you cannot find 6 hotels within this budget, include the cheapest available real hotels — always return at least 6-8 results so the user has options.`
-    : 'No budget constraint — include a range from budget guesthouses to mid-range options.';
-
-  const realAmenities = tripInfo.amenities.filter((a) => a !== 'any');
-  const amenityLine = realAmenities.length
-    ? `Preferred amenities: ${realAmenities.join(', ')}.`
+const callOpenAIHotelSearch = async (openai, tripInfo, nights, includeBudget) => {
+  const budgetLine = includeBudget && tripInfo.budgetValue
+    ? `Budget: around ₹${tripInfo.budgetValue}/night preferred (include cheaper options too).`
     : '';
+  const amenityLine = tripInfo.amenities.filter((a) => a !== 'any').join(', ');
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
       {
         role: 'system',
-        content: 'You are a hotel search assistant. Respond ONLY with valid JSON. No markdown, no explanation, no code blocks.'
+        content: 'You are a hotel data assistant. You MUST always return a JSON object with a "hotels" array of exactly 8 real hotels. NEVER return an empty array. Use your training data knowledge of hotels in the requested city.'
       },
       {
         role: 'user',
-        content: `Find 8 real hotels in ${tripInfo.destination} for ${tripInfo.guests} guest(s).
-Check-in: ${tripInfo.checkIn}, Check-out: ${tripInfo.checkOut} (${nights} nights).
-${budgetInstruction}
-${amenityLine}
+        content: `List 8 real hotels in ${tripInfo.destination} for ${tripInfo.guests} guest(s), ${nights} nights.
+${budgetLine}${amenityLine ? `\nPreferred amenities: ${amenityLine}.` : ''}
+Include a mix: budget guesthouses/OYOs, mid-range 3-star hotels, and well-known properties. Cover different areas/localities of ${tripInfo.destination}.
 
-Source hotels from a MIX of Indian and international booking platforms: Booking.com, MakeMyTrip, Goibibo, Expedia India, Agoda, Hotels.com and Yatra. Include variety — budget guesthouses, mid-range hotels and premium properties as appropriate for the budget.
-
-Return this JSON object (no other text):
-{
-  "hotels": [
-    {
-      "name": "Exact real hotel name",
-      "area": "Specific neighborhood or area within ${tripInfo.destination}",
-      "pricePerNight": <integer INR, MUST be ≤ ${perNightBudget || 100000}>,
-      "rating": <float between 1.0 and 10.0>,
-      "amenities": ["wifi", "pool", "breakfast", ...]
-    }
-  ]
-}`
+Return ONLY this JSON (no explanation, no markdown, no empty array):
+{"hotels":[{"name":"Hotel Name","area":"Locality, ${tripInfo.destination}","pricePerNight":3500,"rating":7.8,"amenities":["wifi","breakfast"]}]}`
       }
     ],
     response_format: { type: 'json_object' },
-    temperature: 0.2,
-    max_tokens: 2000
+    temperature: 0.4,
+    max_tokens: 1500
   });
 
   let parsed;
@@ -423,7 +397,6 @@ Return this JSON object (no other text):
   }
 
   const raw = Array.isArray(parsed) ? parsed : (parsed.hotels || []);
-
   return raw
     .map((h) => ({ ...h, pricePerNight: Number(h.pricePerNight) }))
     .filter((h) => h.name && h.pricePerNight > 0)
@@ -441,6 +414,27 @@ Return this JSON object (no other text):
       link: `https://www.booking.com/search.html?ss=${encodeURIComponent(h.name + ' ' + tripInfo.destination)}`,
       amenities: normalizeAmenities(h.amenities || [])
     }));
+};
+
+const searchHotelsWithOpenAI = async (tripInfo, nights) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY not configured in .env');
+
+  const { default: OpenAI } = await import('openai');
+  const openai = new OpenAI({ apiKey });
+
+  // First attempt: with budget hint
+  let hotels = await callOpenAIHotelSearch(openai, tripInfo, nights, true);
+  console.log(`[ChatGPT] First attempt: ${hotels.length} hotels for "${tripInfo.destination}"`);
+
+  // Retry without budget constraint if first attempt returns nothing
+  if (hotels.length === 0) {
+    console.log(`[ChatGPT] Retrying without budget constraint...`);
+    hotels = await callOpenAIHotelSearch(openai, tripInfo, nights, false);
+    console.log(`[ChatGPT] Retry result: ${hotels.length} hotels`);
+  }
+
+  return hotels;
 };
 
 // ─── Booking.com scraper (fallback) ──────────────────────────────────────────
@@ -508,7 +502,7 @@ const scrapeBooking = async (tripInfo, nights) => {
       })
     );
 
-    return hotels
+    const mapped = hotels
       .filter((h) => h.name && h.priceText && h.priceText.includes('₹'))
       .map((h) => {
         const priceValue = parsePriceToNumber(h.priceText);
@@ -526,6 +520,9 @@ const scrapeBooking = async (tripInfo, nights) => {
         };
       })
       .filter((h) => h.priceValue >= 200 && h.priceValue <= 1000000);
+
+    console.log(`[Booking.com] Scraped ${hotels.length} raw cards → ${mapped.length} valid hotels`);
+    return mapped;
   } finally {
     await context.close();
     await browser.close();
@@ -751,6 +748,8 @@ export const searchHotels = async ({
   let hotels = [];
   const sources = [];
 
+  console.log(`[searchHotels] Searching: ${destination}, budget: ${budget || 'none'}, nights: ${nights}`);
+
   // Run ChatGPT search and Booking.com scrape in parallel for maximum coverage
   const [aiResult, bookingResult] = await Promise.allSettled([
     searchHotelsWithOpenAI(tripInfo, nights),
@@ -761,33 +760,26 @@ export const searchHotels = async ({
     hotels.push(...aiResult.value);
     sources.push({ source: 'ChatGPT', ok: true, count: aiResult.value.length, error: '', live: false, ai: true });
   } else {
-    sources.push({
-      source: 'ChatGPT',
-      ok: aiResult.status === 'fulfilled',
-      count: 0,
-      error: aiResult.status === 'rejected' ? (aiResult.reason?.message || 'AI search failed.') : 'No results returned.',
-      live: false,
-      ai: true
-    });
+    const err = aiResult.status === 'rejected' ? (aiResult.reason?.message || 'AI search failed.') : 'No results returned.';
+    console.error(`[ChatGPT] Failed: ${err}`);
+    sources.push({ source: 'ChatGPT', ok: aiResult.status === 'fulfilled', count: 0, error: err, live: false, ai: true });
   }
 
   if (bookingResult.status === 'fulfilled' && bookingResult.value.length > 0) {
     hotels.push(...bookingResult.value);
     sources.push({ source: 'Booking.com', ok: true, count: bookingResult.value.length, error: '', live: true });
   } else {
-    sources.push({
-      source: 'Booking.com',
-      ok: false,
-      count: 0,
-      error: bookingResult.status === 'rejected' ? (bookingResult.reason?.message || 'Scrape failed.') : 'No listings found.',
-      live: true
-    });
+    const err = bookingResult.status === 'rejected' ? (bookingResult.reason?.message || 'Scrape failed.') : 'No listings found.';
+    console.error(`[Booking.com] Failed: ${err}`);
+    sources.push({ source: 'Booking.com', ok: false, count: 0, error: err, live: true });
   }
 
   hotels = deduplicateHotels(hotels);
+  console.log(`[searchHotels] After primary sources: ${hotels.length} hotels`);
 
   // If neither primary source returned results, try MakeMyTrip and Goibibo
   if (hotels.length === 0) {
+    console.log(`[searchHotels] Trying MakeMyTrip and Goibibo fallbacks...`);
     const [mmtResult, goibiboResult] = await Promise.allSettled([
       scrapeMakeMyTrip(tripInfo, nights),
       scrapeGoibibo(tripInfo, nights)
@@ -804,10 +796,13 @@ export const searchHotels = async ({
         allScraped.push(...result.value);
         sources.push({ source: name, ok: true, count: result.value.length, error: '', live: true });
       } else {
-        sources.push({ source: name, ok: false, count: 0, error: result.reason?.message || 'Scrape failed.', live: true });
+        const err = result.reason?.message || 'Scrape failed.';
+        console.error(`[${name}] Failed: ${err}`);
+        sources.push({ source: name, ok: false, count: 0, error: err, live: true });
       }
     }
     hotels = deduplicateHotels(allScraped);
+    console.log(`[searchHotels] After fallback scrapers: ${hotels.length} hotels`);
   }
 
   const { recommendations, noBudgetResults, cheapestAlternative, overBudgetShown } = buildLiveRecommendations(

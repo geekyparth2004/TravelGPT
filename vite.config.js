@@ -26,6 +26,14 @@ const sendJson = (res, status, data) => {
 };
 
 const attachApiRoutes = (middlewares) => {
+  middlewares.use('/api/status', (req, res) => {
+    const key = process.env.OPENAI_API_KEY;
+    sendJson(res, 200, {
+      openaiKey: key ? `${key.slice(0, 10)}...${key.slice(-4)} (${key.length} chars)` : 'MISSING',
+      status: 'ok'
+    });
+  });
+
   middlewares.use('/api/hotels/search', async (req, res) => {
     try {
       const { searchParams } = new URL(req.url || '', 'http://localhost');

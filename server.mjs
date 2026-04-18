@@ -58,6 +58,17 @@ app.get('/api/hotels/info', async (req, res) => {
   }
 });
 
+// Quick test: verify OpenAI key is loaded
+app.get('/api/status', (req, res) => {
+  const key = process.env.OPENAI_API_KEY;
+  res.json({
+    openaiKey: key ? `${key.slice(0, 10)}...${key.slice(-4)} (${key.length} chars)` : 'MISSING',
+    status: 'ok'
+  });
+});
+
 app.listen(PORT, () => {
+  const key = process.env.OPENAI_API_KEY;
   console.log(`TravelGPT API running on http://localhost:${PORT}`);
+  console.log(`OpenAI key: ${key ? key.slice(0, 14) + '...' : 'NOT SET'}`);
 });
