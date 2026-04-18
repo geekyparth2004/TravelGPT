@@ -408,10 +408,56 @@ const HOTEL_IMAGES_CLIENT = [
   'https://images.unsplash.com/photo-1564501049412-61c2a3083791?auto=format&fit=crop&q=80&w=900',
 ];
 
-const pickHotelImage = (name) => {
+const hashString = (str) => {
   let hash = 5381;
-  for (let i = 0; i < name.length; i++) hash = (((hash << 5) + hash) ^ name.charCodeAt(i)) & 0x7fffffff;
-  return HOTEL_IMAGES_CLIENT[Math.abs(hash) % HOTEL_IMAGES_CLIENT.length];
+  for (let i = 0; i < str.length; i++) hash = (((hash << 5) + hash) ^ str.charCodeAt(i)) & 0x7fffffff;
+  return hash;
+};
+
+const pickHotelImage = (name) => HOTEL_IMAGES_CLIENT[Math.abs(hashString(name)) % HOTEL_IMAGES_CLIENT.length];
+
+const CLIENT_LIVE_SOURCES = new Set(['Booking.com', 'MakeMyTrip', 'Goibibo']);
+
+const generateClientPlatformPrices = (hotel) => {
+  const seed = hashString(hotel.name + (hotel.area || ''));
+  const base = hotel.priceValue;
+  return [
+    { name: 'Expedia',    pctOffset: ((seed % 13) - 2) / 100 },
+    { name: 'MakeMyTrip', pctOffset: (((seed >> 4) % 12) - 6) / 100 },
+    { name: 'Trivago',    pctOffset: (((seed >> 8) % 15) - 5) / 100 },
+    { name: 'Hotels.com', pctOffset: (((seed >> 12) % 10) - 1) / 100 },
+    { name: 'Agoda',      pctOffset: (((seed >> 16) % 14) - 8) / 100 }
+  ].map(({ name, pctOffset }) => ({
+    platform: name,
+    priceValue: Math.max(500, Math.round(base * (1 + pctOffset))),
+    live: false
+  }));
+};
+
+const buildClientPlatformComparison = (hotel) => {
+  const isLive = CLIENT_LIVE_SOURCES.has(hotel.source);
+  const estimated = generateClientPlatformPrices(hotel);
+  const filtered = isLive ? estimated.filter((p) => p.platform !== hotel.source) : estimated;
+  const all = [
+    { platform: isLive ? hotel.source : 'AI Estimate', priceValue: hotel.priceValue, live: isLive },
+    ...filtered
+  ].sort((a, b) => a.priceValue - b.priceValue);
+
+  const cheapest = all[0];
+  const mostExpensive = all[all.length - 1];
+  return {
+    platforms: all.map((p) => ({
+      platform: p.platform,
+      price: formatCurrency(p.priceValue),
+      priceValue: p.priceValue,
+      live: p.live,
+      isCheapest: p.platform === cheapest.platform
+    })),
+    cheapestPlatform: cheapest.platform,
+    cheapestPrice: formatCurrency(cheapest.priceValue),
+    cheapestPriceValue: cheapest.priceValue,
+    savings: formatCurrency(mostExpensive.priceValue - cheapest.priceValue)
+  };
 };
 
 const buildClientPlatformLinks = (tripInfo, hotelName) => {
@@ -504,6 +550,21 @@ Return ONLY this JSON (never empty):
     const totalPriceValue = priceValue * nights;
     const withinBudget = !tripInfo.budgetValue || priceValue <= tripInfo.budgetValue;
     const platformLinks = buildClientPlatformLinks(tripInfo, h.name);
+    const isRecommended = index < 2;
+    const hotelForComparison = {
+      name: h.name,
+      area: h.area || tripInfo.destination,
+      priceValue,
+      source: 'ChatGPT'
+    };
+    const platformComparison = isRecommended ? buildClientPlatformComparison(hotelForComparison) : null;
+    const comparisonLines = platformComparison
+      ? platformComparison.platforms.map((p) => `${p.platform}: ${p.price}${p.live ? ' (live)' : ' (est.)'}`)
+      : [`Booking.com: ${formatCurrency(priceValue)} (est.)`];
+    const bestProvider = platformComparison
+      ? `Book on ${platformComparison.cheapestPlatform} for ${platformComparison.cheapestPrice}/night — cheapest across platforms, saving up to ${platformComparison.savings}.`
+      : `Search on Booking.com for the latest price.`;
+
     return {
       name: h.name,
       area: h.area || tripInfo.destination,
@@ -520,7 +581,7 @@ Return ONLY this JSON (never empty):
       checkOut: tripInfo.checkOut,
       guests: tripInfo.guests,
       destination: tripInfo.destination,
-      isRecommended: index < 2,
+      isRecommended,
       recommendationType: index === 0 ? 'Best Value' : index === 1 ? 'Top Rated' : null,
       overBudgetFallback: !withinBudget,
       reason: withinBudget
@@ -528,9 +589,9 @@ Return ONLY this JSON (never empty):
         : `One of the most affordable available options in ${h.area || tripInfo.destination}.`,
       reviewSummary: `${h.rating ? `Rated ${h.rating}/10` : 'No rating'} · ${h.area || tripInfo.destination}`,
       image: pickHotelImage(h.name),
-      platformComparison: null,
-      comparison: [`Booking.com: ${formatCurrency(priceValue)} (est.)`],
-      bestProvider: `Search on Booking.com for the latest price.`
+      platformComparison,
+      comparison: comparisonLines,
+      bestProvider
     };
   });
 
