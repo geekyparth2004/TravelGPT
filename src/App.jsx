@@ -421,9 +421,9 @@ const fetchLiveRecommendations = async (tripInfo) => {
       }
 
       const payload = await response.json();
-      // Client-side budget guard — only strip hotels with a valid numeric price over budget.
-      // Skip when server already flagged noBudgetResults (it handled it correctly).
-      if (!payload.noBudgetResults && tripInfo.budgetValue && Array.isArray(payload.recommendations)) {
+      // Client-side budget guard — skip when the server already decided to show
+      // over-budget fallback results (overBudgetShown) or flagged noBudgetResults.
+      if (!payload.noBudgetResults && !payload.overBudgetShown && tripInfo.budgetValue && Array.isArray(payload.recommendations)) {
         const originalRecommendations = payload.recommendations;
         payload.recommendations = payload.recommendations.filter((r) => {
           const pv = Number(r.priceValue);
@@ -431,19 +431,12 @@ const fetchLiveRecommendations = async (tripInfo) => {
         });
 
         if (!payload.recommendations.length && originalRecommendations.length) {
-          const cheapest = originalRecommendations
-            .filter((hotel) => Number.isFinite(Number(hotel.priceValue)))
-            .sort((a, b) => Number(a.priceValue) - Number(b.priceValue))[0];
-
-          payload.noBudgetResults = true;
-          payload.cheapestAlternative = cheapest
-            ? {
-                name: cheapest.name,
-                area: cheapest.area,
-                price: cheapest.price,
-                totalPrice: cheapest.totalPrice
-              }
-            : payload.cheapestAlternative || null;
+          // Server sent results but all are over budget — surface the cheapest instead
+          payload.recommendations = [...originalRecommendations]
+            .filter((r) => Number.isFinite(Number(r.priceValue)))
+            .sort((a, b) => Number(a.priceValue) - Number(b.priceValue))
+            .slice(0, 6);
+          payload.overBudgetShown = true;
         }
       }
       return payload;
