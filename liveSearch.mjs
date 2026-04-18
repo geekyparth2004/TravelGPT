@@ -91,6 +91,36 @@ const DEFAULT_HOTEL_IMAGE = HOTEL_IMAGES[0];
 
 const getHotelImage = (name) => HOTEL_IMAGES[Math.abs(hashCode(name)) % HOTEL_IMAGES.length];
 
+const resolveOpenAIApiKey = async () => {
+  if (process.env.OPENAI_API_KEY?.trim()) {
+    return process.env.OPENAI_API_KEY.trim();
+  }
+
+  try {
+    const [{ readFile }, { fileURLToPath }, { dirname, join }] = await Promise.all([
+      import('node:fs/promises'),
+      import('node:url'),
+      import('node:path')
+    ]);
+    const rootDir = dirname(fileURLToPath(import.meta.url));
+    const clientConfig = await readFile(join(rootDir, 'src', 'apiConfig.js'), 'utf8');
+    const match = clientConfig.match(/OPENAI_API_KEY\s*=\s*['"`]([^'"`\r\n]+)['"`]/);
+    return match?.[1]?.trim() || '';
+  } catch {
+    return '';
+  }
+};
+
+const createOpenAIClient = async () => {
+  const apiKey = await resolveOpenAIApiKey();
+  if (!apiKey) {
+    throw new Error('OpenAI API key not configured. Add OPENAI_API_KEY to .env for hotel details.');
+  }
+
+  const { default: OpenAI } = await import('openai');
+  return new OpenAI({ apiKey });
+};
+
 const normalizeAmenities = (items = []) =>
   [...new Set(items.map((item) => item.trim()).filter(Boolean))].slice(0, 5);
 
@@ -347,11 +377,7 @@ const buildCheapestAlternative = (hotels, nights) => {
 // ─── OpenAI hotel search (primary) ───────────────────────────────────────────
 
 const searchHotelsWithOpenAI = async (tripInfo, nights) => {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY not configured in .env');
-
-  const { default: OpenAI } = await import('openai');
-  const openai = new OpenAI({ apiKey });
+  const openai = await createOpenAIClient();
 
   const perNightBudget = tripInfo.budgetValue;
   const totalBudget = perNightBudget ? perNightBudget * nights : null;
@@ -663,11 +689,7 @@ const scrapeGoibibo = async (tripInfo, nights) => {
 // ─── Hotel detail lookup (on-click) ──────────────────────────────────────────
 
 export const getHotelDetails = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY not configured in .env');
-
-  const { default: OpenAI } = await import('openai');
-  const openai = new OpenAI({ apiKey });
+  const openai = await createOpenAIClient();
 
   const budgetLine = budget ? `- Budget: ₹${budget}/night (total ₹${budget * nights} for ${nights} nights)` : '';
 
