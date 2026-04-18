@@ -421,11 +421,13 @@ const fetchLiveRecommendations = async (tripInfo) => {
       }
 
       const payload = await response.json();
-      // Client-side budget guard — strips any over-budget hotel the server missed
-      if (tripInfo.budgetValue && Array.isArray(payload.recommendations)) {
-        payload.recommendations = payload.recommendations.filter(
-          (r) => Number(r.priceValue) <= tripInfo.budgetValue
-        );
+      // Client-side budget guard — only strip hotels with a valid numeric price over budget.
+      // Skip when server already flagged noBudgetResults (it handled it correctly).
+      if (!payload.noBudgetResults && tripInfo.budgetValue && Array.isArray(payload.recommendations)) {
+        payload.recommendations = payload.recommendations.filter((r) => {
+          const pv = Number(r.priceValue);
+          return isNaN(pv) || pv <= tripInfo.budgetValue;
+        });
       }
       return payload;
     } catch (error) {

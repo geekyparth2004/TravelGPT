@@ -404,8 +404,6 @@ Return this JSON object (no other text):
   return raw
     .map((h) => ({ ...h, pricePerNight: Number(h.pricePerNight) }))
     .filter((h) => h.name && h.pricePerNight > 0)
-    // Hard cap: reject anything over budget — catches hallucinated prices
-    .filter((h) => !perNightBudget || h.pricePerNight <= perNightBudget)
     .map((h) => ({
       source: 'AI Estimated',
       name: h.name,
