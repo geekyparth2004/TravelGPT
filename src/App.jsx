@@ -992,12 +992,6 @@ function App() {
             </div>
           </div>
 
-          <div className="sidebar-section sidebar-note">
-            <p className="sidebar-note-title">AI-Powered Search</p>
-            <p className="sidebar-note-copy">
-              Hotels are found via ChatGPT across Booking.com, MakeMyTrip, Goibibo, Expedia & more — strictly filtered to your per-night budget.
-            </p>
-          </div>
         </aside>
 
         <main className="chat-main">
