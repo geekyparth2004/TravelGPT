@@ -730,11 +730,16 @@ h1, h2, h3, h4, h5, h6 {
   transition: background 0.18s, border-color 0.18s, color 0.18s;
 }
 
-.hotel-link--ai:hover {
+.hotel-link--ai:hover:not(:disabled) {
   background: rgba(139, 92, 246, 0.12);
   border-color: #a78bfa;
   color: #ede9fe;
   opacity: 1;
+}
+
+.hotel-link--ai:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* Setup Info Panel */

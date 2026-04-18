@@ -874,7 +874,7 @@ function App() {
                                   <div className="hotel-price">
                                     {hotel.price} <span>/night</span>
                                   </div>
-                                  <div className="hotel-total">{hotel.totalPrice} total · {hotel.nights}n</div>
+                                  <div className="hotel-total">{hotel.totalPrice} total{hotel.nights ? ` · ${hotel.nights}n` : ''}</div>
                                 </div>
                               </div>
 
@@ -923,8 +923,9 @@ function App() {
                                   type="button"
                                   className="hotel-link hotel-link--ai"
                                   onClick={() => handleHotelClick(hotel)}
+                                  disabled={isTyping}
                                 >
-                                  <Sparkles size={13} /> Ask AI about this
+                                  <Sparkles size={13} /> {isTyping ? 'Loading…' : 'Ask AI about this'}
                                 </button>
                                 {hotel.bookingLink ? (
                                   <a className="hotel-link hotel-link--primary" href={hotel.bookingLink} target="_blank" rel="noreferrer">

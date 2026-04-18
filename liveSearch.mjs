@@ -76,7 +76,20 @@ const parseRatingToNumber = (value) => {
   return null;
 };
 
-const DEFAULT_HOTEL_IMAGE = 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900';
+const HOTEL_IMAGES = [
+  'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1551882547-ff40c63fe5fa?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1455587734955-081b22074882?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1571003123894-1f0594d2b5d9?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1564501049412-61c2a3083791?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1578683010236-d716f9a3f461?auto=format&fit=crop&q=80&w=900',
+];
+
+const DEFAULT_HOTEL_IMAGE = HOTEL_IMAGES[0];
+
+const getHotelImage = (name) => HOTEL_IMAGES[Math.abs(hashCode(name)) % HOTEL_IMAGES.length];
 
 const normalizeAmenities = (items = []) =>
   [...new Set(items.map((item) => item.trim()).filter(Boolean))].slice(0, 5);
@@ -403,7 +416,7 @@ Return this JSON object (no other text):
       rating: Number(h.rating) > 0
         ? parseFloat(Math.min(10, Math.max(1, Number(h.rating))).toFixed(1))
         : null,
-      image: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900',
+      image: getHotelImage(h.name),
       link: `https://www.booking.com/search.html?ss=${encodeURIComponent(h.name + ' ' + tripInfo.destination)}`,
       amenities: normalizeAmenities(h.amenities || [])
     }));
@@ -486,7 +499,7 @@ const scrapeBooking = async (tripInfo, nights) => {
           totalPriceValue: priceValue ? priceValue * nights : null,
           priceText: h.priceText,
           rating: parseRatingToNumber(h.ratingText),
-          image: h.image || DEFAULT_HOTEL_IMAGE,
+          image: h.image || getHotelImage(h.name),
           link: h.link,
           amenities: normalizeAmenities(h.amenities)
         };
@@ -559,7 +572,7 @@ const scrapeMakeMyTrip = async (tripInfo, nights) => {
           totalPriceValue: priceValue ? priceValue * nights : null,
           priceText: h.priceText,
           rating: parseRatingToNumber(h.ratingText),
-          image: h.image || DEFAULT_HOTEL_IMAGE,
+          image: h.image || getHotelImage(h.name),
           link: `https://www.makemytrip.com/hotels/hotel-listing/?city=${encodeURIComponent(tripInfo.destination)}&q=${encodeURIComponent(h.name)}`,
           amenities: []
         };
@@ -629,7 +642,7 @@ const scrapeGoibibo = async (tripInfo, nights) => {
           totalPriceValue: priceValue ? priceValue * nights : null,
           priceText: h.priceText,
           rating: parseRatingToNumber(h.ratingText),
-          image: h.image || DEFAULT_HOTEL_IMAGE,
+          image: h.image || getHotelImage(h.name),
           link: `https://www.goibibo.com/hotels/hotels-in-${citySlug}/?q=${encodeURIComponent(h.name)}`,
           amenities: []
         };
@@ -757,18 +770,15 @@ export const searchHotels = async ({
     hotels = deduplicateHotels(allScraped);
   }
 
-  // Hard pre-filter: strip over-budget hotels before scoring/ranking
-  const budgetReadyHotels = perNightBudget
-    ? hotels.filter((h) => Number(h.priceValue) > 0 && Number(h.priceValue) <= perNightBudget)
-    : hotels;
-
+  // Pass full hotel list so buildLiveRecommendations can identify cheapest over-budget
+  // alternative when nothing fits. The function already filters internally.
   const { recommendations, noBudgetResults, cheapestAlternative } = buildLiveRecommendations(
     tripInfo,
-    budgetReadyHotels,
+    hotels,
     nights
   );
 
-  // Final safety net: guarantee no recommendation ever exceeds the per-night budget
+  // Final safety net: regardless of any upstream logic, strip over-budget hotels
   const safeRecommendations = perNightBudget
     ? recommendations.filter((r) => Number(r.priceValue) <= perNightBudget)
     : recommendations;
