@@ -12,6 +12,7 @@ dist
 dist-ssr
 *.local
 .env
+src/apiConfig.js
 
 # Editor directories and files
 .vscode/*

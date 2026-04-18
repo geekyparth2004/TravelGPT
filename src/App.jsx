@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Calendar, ExternalLink, Hotel, List, MapPin, Plane, Send, Sparkles, User, Users } from 'lucide-react';
 import './index.css';
+import { OPENAI_API_KEY } from './apiConfig.js';
 
 const AMENITY_KEYWORDS = [
   'wifi',
@@ -424,10 +425,27 @@ const fetchLiveRecommendations = async (tripInfo) => {
       // Client-side budget guard — only strip hotels with a valid numeric price over budget.
       // Skip when server already flagged noBudgetResults (it handled it correctly).
       if (!payload.noBudgetResults && tripInfo.budgetValue && Array.isArray(payload.recommendations)) {
+        const originalRecommendations = payload.recommendations;
         payload.recommendations = payload.recommendations.filter((r) => {
           const pv = Number(r.priceValue);
-          return isNaN(pv) || pv <= tripInfo.budgetValue;
+          return Number.isFinite(pv) && pv <= tripInfo.budgetValue;
         });
+
+        if (!payload.recommendations.length && originalRecommendations.length) {
+          const cheapest = originalRecommendations
+            .filter((hotel) => Number.isFinite(Number(hotel.priceValue)))
+            .sort((a, b) => Number(a.priceValue) - Number(b.priceValue))[0];
+
+          payload.noBudgetResults = true;
+          payload.cheapestAlternative = cheapest
+            ? {
+                name: cheapest.name,
+                area: cheapest.area,
+                price: cheapest.price,
+                totalPrice: cheapest.totalPrice
+              }
+            : payload.cheapestAlternative || null;
+        }
       }
       return payload;
     } catch (error) {
@@ -479,8 +497,8 @@ ${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}
 };
 
 const callOpenAIForHotelInfo = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-  if (!apiKey) throw new Error('VITE_OPENAI_API_KEY not set in .env');
+  const apiKey = OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OpenAI API key not configured in src/apiConfig.js');
 
   const budgetLine = budget ? `- Budget: ₹${budget}/night (total ₹${budget * nights} for ${nights} nights)` : '';
 

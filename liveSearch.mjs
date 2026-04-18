@@ -306,19 +306,10 @@ const buildLiveRecommendations = (tripInfo, hotels, nights) => {
     : hotels;
 
   if (!pool.length && tripInfo.budgetValue) {
-    // Never show overbudget hotel cards — just report the cheapest available price
-    const cheapest = [...hotels].sort((a, b) => a.priceValue - b.priceValue)[0];
     return {
       recommendations: [],
       noBudgetResults: true,
-      cheapestAlternative: cheapest
-        ? {
-            name: cheapest.name,
-            area: cheapest.area,
-            price: formatINR(cheapest.priceValue),
-            totalPrice: formatINR(cheapest.priceValue * nights)
-          }
-        : null
+      cheapestAlternative: buildCheapestAlternative(hotels, nights)
     };
   }
 
@@ -334,6 +325,23 @@ const buildLiveRecommendations = (tripInfo, hotels, nights) => {
   }));
 
   return { recommendations, noBudgetResults: false, cheapestAlternative: null };
+};
+
+const buildCheapestAlternative = (hotels, nights) => {
+  if (!hotels.length) return null;
+
+  const cheapest = [...hotels]
+    .filter((hotel) => Number.isFinite(Number(hotel.priceValue)))
+    .sort((a, b) => Number(a.priceValue) - Number(b.priceValue))[0];
+
+  if (!cheapest) return null;
+
+  return {
+    name: cheapest.name,
+    area: cheapest.area,
+    price: formatINR(cheapest.priceValue),
+    totalPrice: formatINR(cheapest.totalPriceValue || cheapest.priceValue * nights)
+  };
 };
 
 // ─── OpenAI hotel search (primary) ───────────────────────────────────────────
@@ -778,14 +786,22 @@ export const searchHotels = async ({
 
   // Final safety net: regardless of any upstream logic, strip over-budget hotels
   const safeRecommendations = perNightBudget
-    ? recommendations.filter((r) => Number(r.priceValue) <= perNightBudget)
+    ? recommendations.filter((r) => Number.isFinite(Number(r.priceValue)) && Number(r.priceValue) <= perNightBudget)
     : recommendations;
+
+  const budgetFilteredOutAll = Boolean(
+    perNightBudget &&
+    hotels.length &&
+    safeRecommendations.length === 0
+  );
 
   return {
     recommendations: safeRecommendations,
     sources,
-    noBudgetResults,
-    cheapestAlternative,
+    noBudgetResults: noBudgetResults || budgetFilteredOutAll,
+    cheapestAlternative: noBudgetResults || budgetFilteredOutAll
+      ? cheapestAlternative || buildCheapestAlternative(hotels, nights)
+      : null,
     perNightBudget,
     totalBudget,
     nights
