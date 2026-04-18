@@ -420,7 +420,14 @@ const fetchLiveRecommendations = async (tripInfo) => {
         continue;
       }
 
-      return response.json();
+      const payload = await response.json();
+      // Client-side budget guard — strips any over-budget hotel the server missed
+      if (tripInfo.budgetValue && Array.isArray(payload.recommendations)) {
+        payload.recommendations = payload.recommendations.filter(
+          (r) => Number(r.priceValue) <= tripInfo.budgetValue
+        );
+      }
+      return payload;
     } catch (error) {
       lastError = error instanceof Error ? error.message : 'Live hotel search failed.';
     }
@@ -469,39 +476,73 @@ ${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}
 \`\`\``;
 };
 
-const fetchHotelInfo = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
-  const params = new URLSearchParams({
-    name,
-    area: area || '',
-    destination: destination || '',
-    checkIn: checkIn || '',
-    checkOut: checkOut || '',
-    guests: String(guests || 2),
-    budget: budget ? String(budget) : '',
-    nights: String(nights || 1)
+const callOpenAIForHotelInfo = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
+  if (!apiKey) throw new Error('VITE_OPENAI_API_KEY not set in .env');
+
+  const budgetLine = budget ? `- Budget: ₹${budget}/night (total ₹${budget * nights} for ${nights} nights)` : '';
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      temperature: 0.3,
+      max_tokens: 700,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a knowledgeable travel assistant. Provide clear, practical hotel information using markdown bold (**text**) for section headings. Write in short paragraphs, not bullet lists.'
+        },
+        {
+          role: 'user',
+          content: `Give me detailed information about the hotel "${name}"${area && area !== 'Area unavailable' ? ` in ${area}` : ''}, ${destination}.
+
+Trip context:
+- Check-in: ${checkIn || 'N/A'}, Check-out: ${checkOut || 'N/A'} (${nights} night${nights !== 1 ? 's' : ''})
+- Guests: ${guests || 2}
+${budgetLine}
+
+Cover these areas using **heading** style:
+**Overview** — Type of hotel, star rating, overall vibe.
+**Why stay here** — What makes it stand out for this trip.
+**Location** — Neighbourhood, nearby landmarks, distance from key spots.
+**Rooms & amenities** — Room types, notable facilities.
+**Practical tips** — Check-in time, parking, transport tips.
+**Best suited for** — Family, couples, business, solo, etc.
+
+Keep response under 300 words. Be specific and factual.`
+        }
+      ]
+    })
   });
 
-  const errors = [];
+  if (!res.ok) throw new Error(`OpenAI API error: ${res.status}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || 'No details available.';
+};
 
+const fetchHotelInfo = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
+  const params = new URLSearchParams({
+    name, area: area || '', destination: destination || '',
+    checkIn: checkIn || '', checkOut: checkOut || '',
+    guests: String(guests || 2), budget: budget ? String(budget) : '', nights: String(nights || 1)
+  });
+
+  // Try server endpoint first
   for (const baseUrl of API_BASE_CANDIDATES) {
     const normalizedBase = baseUrl === '' ? '' : baseUrl.replace(/\/$/, '');
     const url = `${normalizedBase}/api/hotels/info?${params.toString()}`;
     try {
       const response = await fetch(url);
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        errors.push(`${url} → ${response.status}${body ? ': ' + body.slice(0, 120) : ''}`);
-        continue;
-      }
+      if (!response.ok) continue;
       const data = await response.json();
-      if (!data.info) throw new Error('Empty response from server');
-      return data.info;
-    } catch (error) {
-      errors.push(`${url} → ${error instanceof Error ? error.message : 'fetch failed'}`);
-    }
+      if (data.info) return data.info;
+    } catch { /* try next */ }
   }
 
-  throw new Error(`Hotel info unavailable. Tried:\n${errors.join('\n')}`);
+  // Server unavailable — call OpenAI directly from browser
+  return callOpenAIForHotelInfo({ name, area, destination, checkIn, checkOut, guests, budget, nights });
 };
 
 const generateAssistantReply = async (tripInfo) => {
@@ -688,12 +729,11 @@ function App() {
       });
       setMessages((prev) => [...prev, { role: 'assistant', content: info }]);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : 'Unknown error';
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: `Could not load details for **${hotel.name}**.\n\n${detail}\n\nMake sure the backend server is running (\`node server.mjs\`) and try again.`
+          content: `Sorry, I couldn't load details for **${hotel.name}** right now. Please try again in a moment.`
         }
       ]);
     } finally {
