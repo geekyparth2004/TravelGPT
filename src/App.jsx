@@ -487,6 +487,12 @@ const createRecommendationsMessage = (tripInfo, payload) => {
     : `Prices compared across Booking.com, MakeMyTrip, Goibibo, Expedia & more`;
 
   const top = payload.recommendations[0];
+
+  if (payload.overBudgetShown && tripInfo.budgetValue) {
+    const perNight = `₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night`;
+    return `No hotels were found within your budget of ${perNight} for ${destination}. Here are the most affordable options available instead:\n\n${summary}\n${sourceNote}\n\nMost affordable: **${top.name}** at ${top.price}/night (${top.totalPrice} total for ${nights} nights).\n\`\`\`json\n${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}\n\`\`\``;
+  }
+
   const budgetClause = totalBudget
     ? ` within your total budget of ₹${totalBudget.toLocaleString('en-IN')} (₹${tripInfo.budgetValue.toLocaleString('en-IN')}/night × ${nights} nights)`
     : '';

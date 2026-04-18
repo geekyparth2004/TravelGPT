@@ -297,23 +297,38 @@ const buildHotelRec = (tripInfo, hotel, index, nights) => {
 };
 
 const buildLiveRecommendations = (tripInfo, hotels, nights) => {
-  if (!hotels.length) return { recommendations: [], noBudgetResults: false, cheapestAlternative: null };
+  if (!hotels.length) return { recommendations: [], noBudgetResults: false, cheapestAlternative: null, overBudgetShown: false };
 
-  // Filter: hotel's TOTAL stay cost must be within the user's total budget
-  // total budget = perNight × nights, so this is equivalent to priceValue <= perNightBudget
   const pool = tripInfo.budgetValue
     ? hotels.filter((h) => Number(h.priceValue) <= Number(tripInfo.budgetValue))
     : hotels;
 
   if (!pool.length && tripInfo.budgetValue) {
+    // Nothing in budget — show cheapest available options rather than an empty response
+    const sortedByPrice = [...hotels]
+      .filter((h) => Number.isFinite(Number(h.priceValue)) && Number(h.priceValue) > 0)
+      .sort((a, b) => Number(a.priceValue) - Number(b.priceValue));
+
+    if (sortedByPrice.length > 0) {
+      const scored = sortedByPrice
+        .map((hotel) => ({ ...hotel, score: scoreHotel({ ...tripInfo, budgetValue: null }, hotel) }))
+        .sort((a, b) => b.score - a.score);
+      const recommendations = scored.slice(0, 6).map((hotel, index) => ({
+        ...buildHotelRec(tripInfo, hotel, index, nights),
+        overBudgetFallback: true
+      }));
+      return { recommendations, noBudgetResults: false, cheapestAlternative: null, overBudgetShown: true };
+    }
+
     return {
       recommendations: [],
       noBudgetResults: true,
-      cheapestAlternative: buildCheapestAlternative(hotels, nights)
+      cheapestAlternative: buildCheapestAlternative(hotels, nights),
+      overBudgetShown: false
     };
   }
 
-  if (!pool.length) return { recommendations: [], noBudgetResults: false, cheapestAlternative: null };
+  if (!pool.length) return { recommendations: [], noBudgetResults: false, cheapestAlternative: null, overBudgetShown: false };
 
   const scored = pool
     .map((hotel) => ({ ...hotel, score: scoreHotel(tripInfo, hotel) }))
@@ -324,7 +339,7 @@ const buildLiveRecommendations = (tripInfo, hotels, nights) => {
     overBudgetFallback: false
   }));
 
-  return { recommendations, noBudgetResults: false, cheapestAlternative: null };
+  return { recommendations, noBudgetResults: false, cheapestAlternative: null, overBudgetShown: false };
 };
 
 const buildCheapestAlternative = (hotels, nights) => {
@@ -357,8 +372,8 @@ const searchHotelsWithOpenAI = async (tripInfo, nights) => {
   const totalBudget = perNightBudget ? perNightBudget * nights : null;
 
   const budgetInstruction = perNightBudget
-    ? `STRICT BUDGET RULE: The user's per-night budget is ₹${perNightBudget}. For ${nights} nights their total trip budget is ₹${totalBudget}. Every hotel you return MUST have pricePerNight ≤ ${perNightBudget}. Do NOT suggest any hotel above this price.`
-    : 'No budget constraint — include a range of options.';
+    ? `Budget preference: ₹${perNightBudget}/night (total trip budget ₹${totalBudget} for ${nights} nights). Strongly prefer hotels at or below ₹${perNightBudget}/night. If the destination is expensive and you cannot find 6 hotels within this budget, include the cheapest available real hotels — always return at least 6-8 results so the user has options.`
+    : 'No budget constraint — include a range from budget guesthouses to mid-range options.';
 
   const realAmenities = tripInfo.amenities.filter((a) => a !== 'any');
   const amenityLine = realAmenities.length
@@ -736,35 +751,55 @@ export const searchHotels = async ({
   let hotels = [];
   const sources = [];
 
-  // Primary: OpenAI (reliable budget accuracy)
-  try {
-    hotels = await searchHotelsWithOpenAI(tripInfo, nights);
-    sources.push({ source: 'ChatGPT', ok: true, count: hotels.length, error: '', live: false, ai: true });
-  } catch (aiErr) {
+  // Run ChatGPT search and Booking.com scrape in parallel for maximum coverage
+  const [aiResult, bookingResult] = await Promise.allSettled([
+    searchHotelsWithOpenAI(tripInfo, nights),
+    scrapeBooking(tripInfo, nights)
+  ]);
+
+  if (aiResult.status === 'fulfilled' && aiResult.value.length > 0) {
+    hotels.push(...aiResult.value);
+    sources.push({ source: 'ChatGPT', ok: true, count: aiResult.value.length, error: '', live: false, ai: true });
+  } else {
     sources.push({
       source: 'ChatGPT',
-      ok: false,
+      ok: aiResult.status === 'fulfilled',
       count: 0,
-      error: aiErr instanceof Error ? aiErr.message : 'AI search failed.',
+      error: aiResult.status === 'rejected' ? (aiResult.reason?.message || 'AI search failed.') : 'No results returned.',
       live: false,
       ai: true
     });
+  }
 
-    // Fallback: run Booking.com, MakeMyTrip and Goibibo scrapers in parallel
-    const [bookingResult, mmtResult, goibiboResult] = await Promise.allSettled([
-      scrapeBooking(tripInfo, nights),
+  if (bookingResult.status === 'fulfilled' && bookingResult.value.length > 0) {
+    hotels.push(...bookingResult.value);
+    sources.push({ source: 'Booking.com', ok: true, count: bookingResult.value.length, error: '', live: true });
+  } else {
+    sources.push({
+      source: 'Booking.com',
+      ok: false,
+      count: 0,
+      error: bookingResult.status === 'rejected' ? (bookingResult.reason?.message || 'Scrape failed.') : 'No listings found.',
+      live: true
+    });
+  }
+
+  hotels = deduplicateHotels(hotels);
+
+  // If neither primary source returned results, try MakeMyTrip and Goibibo
+  if (hotels.length === 0) {
+    const [mmtResult, goibiboResult] = await Promise.allSettled([
       scrapeMakeMyTrip(tripInfo, nights),
       scrapeGoibibo(tripInfo, nights)
     ]);
 
-    const scraperDefs = [
-      { name: 'Booking.com', result: bookingResult },
+    const fallbackDefs = [
       { name: 'MakeMyTrip', result: mmtResult },
       { name: 'Goibibo', result: goibiboResult }
     ];
 
     const allScraped = [];
-    for (const { name, result } of scraperDefs) {
+    for (const { name, result } of fallbackDefs) {
       if (result.status === 'fulfilled') {
         allScraped.push(...result.value);
         sources.push({ source: name, ok: true, count: result.value.length, error: '', live: true });
@@ -772,25 +807,25 @@ export const searchHotels = async ({
         sources.push({ source: name, ok: false, count: 0, error: result.reason?.message || 'Scrape failed.', live: true });
       }
     }
-
     hotels = deduplicateHotels(allScraped);
   }
 
-  // Pass full hotel list so buildLiveRecommendations can identify cheapest over-budget
-  // alternative when nothing fits. The function already filters internally.
-  const { recommendations, noBudgetResults, cheapestAlternative } = buildLiveRecommendations(
+  const { recommendations, noBudgetResults, cheapestAlternative, overBudgetShown } = buildLiveRecommendations(
     tripInfo,
     hotels,
     nights
   );
 
-  // Final safety net: regardless of any upstream logic, strip over-budget hotels
-  const safeRecommendations = perNightBudget
+  // Safety net: strip over-budget hotels only when we are NOT intentionally showing
+  // over-budget fallback results (overBudgetShown means budget was too tight and we
+  // chose to display cheapest available rather than an empty "no hotels" message).
+  const safeRecommendations = perNightBudget && !overBudgetShown
     ? recommendations.filter((r) => Number.isFinite(Number(r.priceValue)) && Number(r.priceValue) <= perNightBudget)
     : recommendations;
 
   const budgetFilteredOutAll = Boolean(
     perNightBudget &&
+    !overBudgetShown &&
     hotels.length &&
     safeRecommendations.length === 0
   );
@@ -799,6 +834,7 @@ export const searchHotels = async ({
     recommendations: safeRecommendations,
     sources,
     noBudgetResults: noBudgetResults || budgetFilteredOutAll,
+    overBudgetShown: overBudgetShown || false,
     cheapestAlternative: noBudgetResults || budgetFilteredOutAll
       ? cheapestAlternative || buildCheapestAlternative(hotels, nights)
       : null,
