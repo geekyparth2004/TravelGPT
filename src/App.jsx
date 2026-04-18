@@ -411,6 +411,46 @@ const pickHotelImage = (name) => {
   return HOTEL_IMAGES_CLIENT[Math.abs(hash) % HOTEL_IMAGES_CLIENT.length];
 };
 
+const buildClientPlatformLinks = (tripInfo, hotelName) => {
+  const q = encodeURIComponent(`${hotelName} ${tripInfo.destination}`);
+  const nameOnly = encodeURIComponent(hotelName);
+  const dest = encodeURIComponent(tripInfo.destination);
+  const ci = tripInfo.checkIn || '';
+  const co = tripInfo.checkOut || '';
+  const adults = tripInfo.guests || 2;
+
+  const booking = new URLSearchParams({
+    ss: `${hotelName}, ${tripInfo.destination}`,
+    ...(ci && { checkin: ci }),
+    ...(co && { checkout: co }),
+    group_adults: String(adults),
+    no_rooms: '1',
+    selected_currency: 'INR'
+  }).toString();
+
+  const [y1, m1, d1] = ci.split('-');
+  const [y2, m2, d2] = co.split('-');
+  const mmtCI = ci ? `${m1}%2F${d1}%2F${y1}` : '';
+  const mmtCO = co ? `${m2}%2F${d2}%2F${y2}` : '';
+  const gbCI = ci.replace(/-/g, '');
+  const gbCO = co.replace(/-/g, '');
+
+  return {
+    booking: `https://www.booking.com/searchresults.html?${booking}`,
+    makemytrip: ci && co
+      ? `https://www.makemytrip.com/hotels/hotel-listing/?checkin=${mmtCI}&checkout=${mmtCO}&city=${dest}&searchText=${nameOnly}&roomStayQualifier=${adults}e0e&country=IN`
+      : `https://www.makemytrip.com/hotels/hotel-listing/?searchText=${q}`,
+    goibibo: ci && co
+      ? `https://www.goibibo.com/hotels/find-hotels-in-${tripInfo.destination.toLowerCase().replace(/\s+/g, '-')}/?ci=${gbCI}&co=${gbCO}&nc=${adults}&r=1&q=${nameOnly}`
+      : `https://www.goibibo.com/hotels/?q=${q}`,
+    agoda: `https://www.agoda.com/search?checkIn=${ci}&checkOut=${co}&rooms=1&adults=${adults}&textToSearch=${q}`,
+    trivago: `https://www.trivago.in/en-IN/srl?search=${q}${ci ? `&aDateRange%5Barr%5D=${ci}` : ''}${co ? `&aDateRange%5Bdep%5D=${co}` : ''}`,
+    expedia: `https://www.expedia.co.in/Hotel-Search?destination=${q}${ci ? `&startDate=${ci}` : ''}${co ? `&endDate=${co}` : ''}&adults=${adults}`,
+    hotels: `https://www.hotels.com/search.do?q-destination=${q}${ci ? `&q-check-in=${ci}` : ''}${co ? `&q-check-out=${co}` : ''}&q-rooms=1&q-room-0-adults=${adults}`,
+    yatra: `https://www.yatra.com/hotels/search?destination=${dest}${ci ? `&checkin=${ci}` : ''}${co ? `&checkout=${co}` : ''}&rooms=1&adults=${adults}`
+  };
+};
+
 // Direct ChatGPT call from the browser — used when the server returns no results
 const searchHotelsClientSide = async (tripInfo) => {
   const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
@@ -460,6 +500,7 @@ Return ONLY this JSON (never empty):
     const priceValue = Math.round(Number(h.pricePerNight));
     const totalPriceValue = priceValue * nights;
     const withinBudget = !tripInfo.budgetValue || priceValue <= tripInfo.budgetValue;
+    const platformLinks = buildClientPlatformLinks(tripInfo, h.name);
     return {
       name: h.name,
       area: h.area || tripInfo.destination,
@@ -470,7 +511,12 @@ Return ONLY this JSON (never empty):
       rating: Number(h.rating) > 0 ? parseFloat(Math.min(10, Math.max(1, Number(h.rating))).toFixed(1)) : null,
       amenities: (h.amenities || []).slice(0, 5),
       source: 'ChatGPT',
-      bookingLink: `https://www.booking.com/search.html?ss=${encodeURIComponent(h.name + ' ' + tripInfo.destination)}`,
+      bookingLink: platformLinks.booking,
+      platformLinks,
+      checkIn: tripInfo.checkIn,
+      checkOut: tripInfo.checkOut,
+      guests: tripInfo.guests,
+      destination: tripInfo.destination,
       isRecommended: index < 2,
       recommendationType: index === 0 ? 'Best Value' : index === 1 ? 'Top Rated' : null,
       overBudgetFallback: !withinBudget,
@@ -1086,35 +1132,33 @@ function App() {
                                 >
                                   <Sparkles size={13} /> {isTyping ? 'Loading…' : 'Ask AI about this'}
                                 </button>
-                                {hotel.bookingLink ? (
-                                  <a className="hotel-link hotel-link--primary" href={hotel.bookingLink} target="_blank" rel="noreferrer">
-                                    Book on Booking.com <ExternalLink size={13} />
-                                  </a>
-                                ) : (
-                                  <a className="hotel-link hotel-link--primary" href={`https://www.booking.com/search.html?ss=${encodeURIComponent(hotel.name)}`} target="_blank" rel="noreferrer">
-                                    Search on Booking.com <ExternalLink size={13} />
-                                  </a>
-                                )}
-                                {hotel.platformComparison?.cheapestPlatform && hotel.platformComparison.cheapestPlatform !== 'Booking.com' && (
-                                  <a
-                                    className="hotel-link hotel-link--secondary"
-                                    href={
-                                      hotel.platformComparison.cheapestPlatform === 'MakeMyTrip'
-                                        ? `https://www.makemytrip.com/hotels/hotel-listing/?searchText=${encodeURIComponent(hotel.name)}`
-                                        : hotel.platformComparison.cheapestPlatform === 'Agoda'
-                                        ? `https://www.agoda.com/search?city=${encodeURIComponent(hotel.name)}`
-                                        : hotel.platformComparison.cheapestPlatform === 'Trivago'
-                                        ? `https://www.trivago.in/?q=${encodeURIComponent(hotel.name)}`
-                                        : hotel.platformComparison.cheapestPlatform === 'Expedia'
-                                        ? `https://www.expedia.com/Hotel-Search?destination=${encodeURIComponent(hotel.name)}`
-                                        : `https://www.hotels.com/search.do?q=${encodeURIComponent(hotel.name)}`
-                                    }
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    Check {hotel.platformComparison.cheapestPlatform} <ExternalLink size={11} />
-                                  </a>
-                                )}
+                                <a
+                                  className="hotel-link hotel-link--primary"
+                                  href={hotel.bookingLink || hotel.platformLinks?.booking || `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(hotel.name + ' ' + (hotel.destination || ''))}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Book on Booking.com <ExternalLink size={13} />
+                                </a>
+                                {hotel.platformComparison?.cheapestPlatform && hotel.platformComparison.cheapestPlatform !== 'Booking.com' && (() => {
+                                  const cheapest = hotel.platformComparison.cheapestPlatform;
+                                  const links = hotel.platformLinks || {};
+                                  const map = {
+                                    MakeMyTrip: links.makemytrip,
+                                    Agoda: links.agoda,
+                                    Trivago: links.trivago,
+                                    Expedia: links.expedia,
+                                    'Hotels.com': links.hotels,
+                                    Goibibo: links.goibibo,
+                                    Yatra: links.yatra
+                                  };
+                                  const href = map[cheapest] || `https://www.google.com/search?q=${encodeURIComponent(hotel.name + ' ' + (hotel.destination || '') + ' ' + cheapest)}`;
+                                  return (
+                                    <a className="hotel-link hotel-link--secondary" href={href} target="_blank" rel="noreferrer">
+                                      Check {cheapest} <ExternalLink size={11} />
+                                    </a>
+                                  );
+                                })()}
                               </div>
                             </div>
                           </div>

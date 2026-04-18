@@ -261,6 +261,46 @@ const scoreHotel = (tripInfo, hotel) => {
   return score;
 };
 
+const buildPlatformLinks = (tripInfo, hotelName) => {
+  const q = encodeURIComponent(`${hotelName} ${tripInfo.destination}`);
+  const nameOnly = encodeURIComponent(hotelName);
+  const dest = encodeURIComponent(tripInfo.destination);
+  const ci = tripInfo.checkIn;
+  const co = tripInfo.checkOut;
+  const adults = tripInfo.guests || 2;
+
+  const booking = new URLSearchParams({
+    ss: `${hotelName}, ${tripInfo.destination}`,
+    checkin: ci,
+    checkout: co,
+    group_adults: String(adults),
+    no_rooms: '1',
+    selected_currency: 'INR'
+  }).toString();
+
+  const [y1, m1, d1] = (ci || '').split('-');
+  const [y2, m2, d2] = (co || '').split('-');
+  const mmtCI = ci ? `${m1}%2F${d1}%2F${y1}` : '';
+  const mmtCO = co ? `${m2}%2F${d2}%2F${y2}` : '';
+  const gbCI = ci ? ci.replace(/-/g, '') : '';
+  const gbCO = co ? co.replace(/-/g, '') : '';
+
+  return {
+    booking: `https://www.booking.com/searchresults.html?${booking}`,
+    makemytrip: ci && co
+      ? `https://www.makemytrip.com/hotels/hotel-listing/?checkin=${mmtCI}&checkout=${mmtCO}&city=${dest}&searchText=${nameOnly}&roomStayQualifier=${adults}e0e&locusId=${dest}&locusType=city&country=IN`
+      : `https://www.makemytrip.com/hotels/hotel-listing/?searchText=${q}`,
+    goibibo: ci && co
+      ? `https://www.goibibo.com/hotels/find-hotels-in-${dest.toLowerCase()}/?ci=${gbCI}&co=${gbCO}&nc=${adults}&r=1&q=${nameOnly}`
+      : `https://www.goibibo.com/hotels/?q=${q}`,
+    agoda: `https://www.agoda.com/search?city=&checkIn=${ci || ''}&checkOut=${co || ''}&rooms=1&adults=${adults}&textToSearch=${q}`,
+    trivago: `https://www.trivago.in/en-IN/srl?search=${q}${ci ? `&aDateRange%5Barr%5D=${ci}` : ''}${co ? `&aDateRange%5Bdep%5D=${co}` : ''}`,
+    expedia: `https://www.expedia.co.in/Hotel-Search?destination=${q}${ci ? `&startDate=${ci}` : ''}${co ? `&endDate=${co}` : ''}&adults=${adults}`,
+    hotels: `https://www.hotels.com/search.do?q-destination=${q}${ci ? `&q-check-in=${ci}` : ''}${co ? `&q-check-out=${co}` : ''}&q-rooms=1&q-room-0-adults=${adults}`,
+    yatra: `https://www.yatra.com/hotels/search?destination=${dest}${ci ? `&checkin=${ci}` : ''}${co ? `&checkout=${co}` : ''}&rooms=1&adults=${adults}`
+  };
+};
+
 const buildHotelRec = (tripInfo, hotel, index, nights) => {
   const isRecommended = index < 2;
   const recommendationType = index === 0 ? 'Best Value' : index === 1 ? 'Top Rated' : null;
@@ -271,6 +311,10 @@ const buildHotelRec = (tripInfo, hotel, index, nights) => {
   const bestProvider = platformComparison
     ? `Book on ${platformComparison.cheapestPlatform} for ${platformComparison.cheapestPrice}/night — cheapest across platforms, saving up to ${platformComparison.savings}.`
     : `${hotel.source} has this listing available for your dates.`;
+
+  const platformLinks = buildPlatformLinks(tripInfo, hotel.name);
+  // If we have a real scraped Booking.com direct hotel URL, prefer it
+  const bookingLink = hotel.link && hotel.link.includes('/hotel/') ? hotel.link : platformLinks.booking;
 
   return {
     name: hotel.name,
@@ -283,7 +327,12 @@ const buildHotelRec = (tripInfo, hotel, index, nights) => {
     image: hotel.image,
     amenities: hotel.amenities,
     source: hotel.source,
-    bookingLink: hotel.link,
+    bookingLink,
+    platformLinks,
+    checkIn: tripInfo.checkIn,
+    checkOut: tripInfo.checkOut,
+    guests: tripInfo.guests,
+    destination: tripInfo.destination,
     isRecommended,
     recommendationType,
     reason: isRecommended
