@@ -77,6 +77,9 @@ const EMPTY_TRIP_INFO = {
 const INTRO_MESSAGE =
   "Hello! I'm TravelGPT. Tell me where you're going, your check-in and check-out dates, number of guests, budget in rupees, and the must-have amenities you care about.";
 
+const INTRO_FOLLOWUP_MESSAGE =
+  "So, where would you like to book a hotel?";
+
 const API_BASE_CANDIDATES = [
   import.meta.env.VITE_API_BASE,
   typeof window !== 'undefined' && window.location.protocol.startsWith('http') ? '' : null,
@@ -740,7 +743,10 @@ const generateAssistantReply = async (tripInfo) => {
 };
 
 function App() {
-  const [messages, setMessages] = useState([{ role: 'assistant', content: INTRO_MESSAGE }]);
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: INTRO_MESSAGE },
+    { role: 'assistant', content: INTRO_FOLLOWUP_MESSAGE }
+  ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [tripInfo, setTripInfo] = useState(EMPTY_TRIP_INFO);
