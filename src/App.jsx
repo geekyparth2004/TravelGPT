@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Calendar, ExternalLink, Hotel, List, MapPin, Plane, Send, Sparkles, User, Users } from 'lucide-react';
 import './index.css';
+import { OPENAI_API_KEY } from './apiConfig.js';
 
 const AMENITY_KEYWORDS = [
   'wifi',
@@ -495,6 +496,52 @@ ${JSON.stringify({ recommendations: payload.recommendations }, null, 2)}
 \`\`\``;
 };
 
+const callOpenAIForHotelInfo = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
+  const apiKey = OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OpenAI API key not configured in src/apiConfig.js');
+
+  const budgetLine = budget ? `- Budget: â‚¹${budget}/night (total â‚¹${budget * nights} for ${nights} nights)` : '';
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      temperature: 0.3,
+      max_tokens: 700,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a knowledgeable travel assistant. Provide clear, practical hotel information using markdown bold (**text**) for section headings. Write in short paragraphs, not bullet lists.'
+        },
+        {
+          role: 'user',
+          content: `Give me detailed information about the hotel "${name}"${area && area !== 'Area unavailable' ? ` in ${area}` : ''}, ${destination}.
+
+Trip context:
+- Check-in: ${checkIn || 'N/A'}, Check-out: ${checkOut || 'N/A'} (${nights} night${nights !== 1 ? 's' : ''})
+- Guests: ${guests || 2}
+${budgetLine}
+
+Cover these areas using **heading** style:
+**Overview** â€” Type of hotel, star rating, overall vibe.
+**Why stay here** â€” What makes it stand out for this trip.
+**Location** â€” Neighbourhood, nearby landmarks, distance from key spots.
+**Rooms & amenities** â€” Room types, notable facilities.
+**Practical tips** â€” Check-in time, parking, transport tips.
+**Best suited for** â€” Family, couples, business, solo, etc.
+
+Keep response under 300 words. Be specific and factual.`
+        }
+      ]
+    })
+  });
+
+  if (!res.ok) throw new Error(`OpenAI API error: ${res.status}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || 'No details available.';
+};
+
 const fetchHotelInfo = async ({ name, area, destination, checkIn, checkOut, guests, budget, nights }) => {
   const params = new URLSearchParams({
     name, area: area || '', destination: destination || '',
@@ -502,26 +549,20 @@ const fetchHotelInfo = async ({ name, area, destination, checkIn, checkOut, gues
     guests: String(guests || 2), budget: budget ? String(budget) : '', nights: String(nights || 1)
   });
 
-  let lastError = 'Hotel details are unavailable right now.';
-
+  // Try server endpoint first
   for (const baseUrl of API_BASE_CANDIDATES) {
     const normalizedBase = baseUrl === '' ? '' : baseUrl.replace(/\/$/, '');
     const url = `${normalizedBase}/api/hotels/info?${params.toString()}`;
     try {
       const response = await fetch(url);
-      const data = await response.json().catch(() => null);
-
-      if (response.ok && data?.info) {
-        return data.info;
-      }
-
-      lastError = data?.error || `Hotel details failed with status ${response.status}.`;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : 'Hotel details are unavailable right now.';
-    }
+      if (!response.ok) continue;
+      const data = await response.json();
+      if (data.info) return data.info;
+    } catch { /* try next */ }
   }
 
-  throw new Error(lastError);
+  // Server unavailable — call OpenAI directly from browser
+  return callOpenAIForHotelInfo({ name, area, destination, checkIn, checkOut, guests, budget, nights });
 };
 
 const generateAssistantReply = async (tripInfo) => {
@@ -708,12 +749,11 @@ function App() {
       });
       setMessages((prev) => [...prev, { role: 'assistant', content: info }]);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Please try again in a moment.';
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: `Sorry, I couldn't load details for **${hotel.name}** right now. ${errorMessage}`
+          content: `Sorry, I couldn't load details for **${hotel.name}** right now. Please try again in a moment.`
         }
       ]);
     } finally {
