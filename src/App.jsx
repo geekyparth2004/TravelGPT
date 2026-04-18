@@ -396,6 +396,110 @@ const getTripSummary = (tripInfo) => {
   return summaryParts.filter(Boolean).join(' | ');
 };
 
+const HOTEL_IMAGES_CLIENT = [
+  'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1551882547-ff40c63fe5fa?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1455587734955-081b22074882?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1571003123894-1f0594d2b5d9?auto=format&fit=crop&q=80&w=900',
+  'https://images.unsplash.com/photo-1564501049412-61c2a3083791?auto=format&fit=crop&q=80&w=900',
+];
+
+const pickHotelImage = (name) => {
+  let hash = 5381;
+  for (let i = 0; i < name.length; i++) hash = (((hash << 5) + hash) ^ name.charCodeAt(i)) & 0x7fffffff;
+  return HOTEL_IMAGES_CLIENT[Math.abs(hash) % HOTEL_IMAGES_CLIENT.length];
+};
+
+// Direct ChatGPT call from the browser — used when the server returns no results
+const searchHotelsClientSide = async (tripInfo) => {
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
+  if (!apiKey) throw new Error('VITE_OPENAI_API_KEY not set in .env');
+
+  const nights = getNightCount(tripInfo.checkIn, tripInfo.checkOut) || 1;
+  const budgetLine = tripInfo.budgetValue
+    ? `Budget preference: around ₹${tripInfo.budgetValue}/night. Include cheaper options too.`
+    : '';
+  const amenityLine = (tripInfo.amenities || []).filter((a) => a !== 'any').join(', ');
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a hotel recommendation engine. You MUST always return a JSON object with a "hotels" array of exactly 8 real hotels. NEVER return an empty array. Use your training knowledge of real hotels in the requested city.'
+        },
+        {
+          role: 'user',
+          content: `List 8 real hotels in ${tripInfo.destination} for ${tripInfo.guests || 2} guests, ${nights} nights (${tripInfo.checkIn} to ${tripInfo.checkOut}).
+${budgetLine}${amenityLine ? `\nPreferred amenities: ${amenityLine}.` : ''}
+Include a mix: budget guesthouses/OYO, mid-range 3-star, and well-known properties. Cover different localities of ${tripInfo.destination}.
+Return ONLY this JSON (never empty):
+{"hotels":[{"name":"Hotel Name","area":"Locality, ${tripInfo.destination}","pricePerNight":3500,"rating":7.8,"amenities":["wifi","breakfast"]}]}`
+        }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.4,
+      max_tokens: 1500
+    })
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(`OpenAI API error ${res.status}: ${errData.error?.message || 'check your API key'}`);
+  }
+
+  const data = await res.json();
+  const parsed = JSON.parse(data.choices[0].message.content);
+  const raw = (parsed.hotels || []).filter((h) => h.name && Number(h.pricePerNight) > 0);
+
+  const recommendations = raw.map((h, index) => {
+    const priceValue = Math.round(Number(h.pricePerNight));
+    const totalPriceValue = priceValue * nights;
+    const withinBudget = !tripInfo.budgetValue || priceValue <= tripInfo.budgetValue;
+    return {
+      name: h.name,
+      area: h.area || tripInfo.destination,
+      price: formatCurrency(priceValue),
+      priceValue,
+      totalPrice: formatCurrency(totalPriceValue),
+      nights,
+      rating: Number(h.rating) > 0 ? parseFloat(Math.min(10, Math.max(1, Number(h.rating))).toFixed(1)) : null,
+      amenities: (h.amenities || []).slice(0, 5),
+      source: 'ChatGPT',
+      bookingLink: `https://www.booking.com/search.html?ss=${encodeURIComponent(h.name + ' ' + tripInfo.destination)}`,
+      isRecommended: index < 2,
+      recommendationType: index === 0 ? 'Best Value' : index === 1 ? 'Top Rated' : null,
+      overBudgetFallback: !withinBudget,
+      reason: withinBudget
+        ? `Fits your ${tripInfo.budgetValue ? formatCurrency(tripInfo.budgetValue) + '/night' : ''} budget in ${h.area || tripInfo.destination}.`
+        : `One of the most affordable available options in ${h.area || tripInfo.destination}.`,
+      reviewSummary: `${h.rating ? `Rated ${h.rating}/10` : 'No rating'} · ${h.area || tripInfo.destination}`,
+      image: pickHotelImage(h.name),
+      platformComparison: null,
+      comparison: [`Booking.com: ${formatCurrency(priceValue)} (est.)`],
+      bestProvider: `Search on Booking.com for the latest price.`
+    };
+  });
+
+  const withinBudget = recommendations.filter((r) => !r.overBudgetFallback);
+  const overBudget = recommendations.filter((r) => r.overBudgetFallback);
+  const finalRecs = withinBudget.length > 0 ? withinBudget : overBudget;
+
+  return {
+    recommendations: finalRecs.slice(0, 6),
+    sources: [{ source: 'ChatGPT', ok: true, count: finalRecs.length, error: '', live: false, ai: true }],
+    noBudgetResults: false,
+    overBudgetShown: withinBudget.length === 0 && overBudget.length > 0,
+    perNightBudget: tripInfo.budgetValue,
+    totalBudget: tripInfo.budgetValue ? tripInfo.budgetValue * nights : null,
+    nights
+  };
+};
+
 const fetchLiveRecommendations = async (tripInfo) => {
   const params = new URLSearchParams({
     destination: tripInfo.destination,
@@ -406,7 +510,7 @@ const fetchLiveRecommendations = async (tripInfo) => {
     amenities: tripInfo.amenities.join(',')
   });
 
-  let lastError = 'Live hotel search failed.';
+  let serverPayload = null;
 
   for (const baseUrl of API_BASE_CANDIDATES) {
     const normalizedBase = baseUrl === '' ? '' : baseUrl.replace(/\/$/, '');
@@ -414,38 +518,35 @@ const fetchLiveRecommendations = async (tripInfo) => {
 
     try {
       const response = await fetch(requestUrl);
-      if (!response.ok) {
-        const errorPayload = await response.text();
-        lastError = errorPayload || `Live hotel search failed with status ${response.status}.`;
-        continue;
-      }
+      if (!response.ok) continue;
 
       const payload = await response.json();
-      // Client-side budget guard — skip when the server already decided to show
-      // over-budget fallback results (overBudgetShown) or flagged noBudgetResults.
       if (!payload.noBudgetResults && !payload.overBudgetShown && tripInfo.budgetValue && Array.isArray(payload.recommendations)) {
-        const originalRecommendations = payload.recommendations;
-        payload.recommendations = payload.recommendations.filter((r) => {
+        const original = payload.recommendations;
+        payload.recommendations = original.filter((r) => {
           const pv = Number(r.priceValue);
           return Number.isFinite(pv) && pv <= tripInfo.budgetValue;
         });
-
-        if (!payload.recommendations.length && originalRecommendations.length) {
-          // Server sent results but all are over budget — surface the cheapest instead
-          payload.recommendations = [...originalRecommendations]
+        if (!payload.recommendations.length && original.length) {
+          payload.recommendations = [...original]
             .filter((r) => Number.isFinite(Number(r.priceValue)))
             .sort((a, b) => Number(a.priceValue) - Number(b.priceValue))
             .slice(0, 6);
           payload.overBudgetShown = true;
         }
       }
-      return payload;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : 'Live hotel search failed.';
-    }
+      serverPayload = payload;
+      break;
+    } catch { /* try next base */ }
   }
 
-  throw new Error(lastError);
+  // If server returned results, use them
+  if (serverPayload && serverPayload.recommendations && serverPayload.recommendations.length > 0) {
+    return serverPayload;
+  }
+
+  // Server returned nothing — call ChatGPT directly from the browser
+  return searchHotelsClientSide(tripInfo);
 };
 
 const createRecommendationsMessage = (tripInfo, payload) => {
